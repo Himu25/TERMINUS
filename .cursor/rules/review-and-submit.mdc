@@ -1,0 +1,368 @@
+---
+description: Step 3b paper-review checklist and Step 4 final-approval / packaging discipline. Pull when reviewing a constructed task or preparing submission.
+globs:
+  - "tasks/*/instruction.md"
+  - "tasks/*/tests/test_outputs.py"
+  - "tasks/*/output_contract.toml"
+alwaysApply: false
+---
+
+# Review & Submit
+
+## Severity Guide
+
+- **HIGH** — any HIGH failure = reject
+- **MEDIUM** — multiple MEDIUM = reject; single MEDIUM = accept with note
+- **LOW** — does not block acceptance alone
+
+---
+
+## 1. Instruction (HIGH unless noted)
+
+- Concise: 1 sentence to 3 paragraphs. Reads like a human prompt with minimal markdown.
+- Goal is clear and well-specified. Not primarily hard via hidden edge cases.
+- No hints, step-by-step solve instructions, or solution-revealing bold markers.
+- No prescribed implementation scaffolding — exact function signatures, exact file layouts, named libraries, or named build commands when the agent should be figuring those out. (MEDIUM)
+- No emojis or decorative unicode. (MEDIUM)
+- No synthetic sections like `Deliverables`, `Artifacts`, `Acceptance Criteria` unless genuinely needed. (MEDIUM)
+- Interesting — useful to some group of developers.
+- Does not mention specific tools unless verifier can prove tool usage.
+- Unique vs TB2, TB3, Snorkel TB1 — initial state or expected output differs non-trivially.
+- All paths are absolute in-container references.
+- Does not include the task name or legacy canary strings.
+- Does not surface `internal_harness_files` in instruction.md unless that same path is also declared in `user_visible_outputs`.
+- Milestone tasks: each `steps/milestone_N/instruction.md` covers only that milestone's prompt with a "signal completion" directive; milestone 1's instruction additionally carries the overall task context. No top-level `instruction.md`, no `milestones.md` / `milestone_X.md` at the task root, and no preview/spoiler of later milestones inside earlier ones.
+
+## 2. Environment (HIGH unless noted)
+
+- Reproducible and self-contained. No runtime web/data fetches for task assets.
+- `environment/Dockerfile` sets a real `WORKDIR` (e.g., `/app`).
+- Every `FROM` stage pinned by digest, including builder stages.
+- Apt packages pinned to specific versions.
+- Environment file names are diverse and realistic (e.g., `README.md`, `architecture.md`, API docs, schema files, sample configs). Variety is encouraged; uniformity across tasks trains shape rather than substance.
+- No AI-specific filenames anywhere under the archive (`CLAUDE.md`, `skills.md`, `AGENTS.md`, `.cursor/`, etc.) — banned at any depth by `validate_submission_zip.py`. (HIGH)
+- No hidden agent instructions in environment files. Step-by-step walkthroughs, "to solve this..." phrases, prescriptive TODOs aimed at the solver, and `STEP N:` / `HINT:` markers are forbidden. The litmus test: an environment file should look like something a human engineer would plausibly find in a real repo, not a guide written for the agent. `run_static_checks.py --only environment_hidden_instructions` enforces this. (HIGH)
+- LICENSE policy. Minimal / small codebases: licenses should almost never be included; omit by default. Large codebases: use the repos we provide (which already carry copyright licenses with explicit dataset-inclusion permission). If sourcing your own, the upstream repo MUST be MIT, Apache 2.0, or BSD; anything else is not allowed. (HIGH)
+- Every `COPY` / `ADD` source path resolves inside the build context. Dead references (e.g., `COPY .cargo /app/.cargo` when no `.cargo/` directory exists) are a HIGH failure — the image won't build and the oracle won't reach any test. `run_static_checks.py --only dockerfile_copy_sources` enforces this.
+- Non-trivial `environment/` includes `environment/.dockerignore` in the **task repo and submission zip** (exclude `.git`, `**/__pycache__/`, `**/*.pyc`, `**/node_modules/`, `.env`, `solution/`, `tests/`). It is a hidden dotfile; absence from the task tree is a `dockerfile_check.py` warning; absence from the zip when the task has one is a packaging defect. (MEDIUM)
+- Does not copy `solution/`, `tests/`, or oracle answers into the image.
+- Does not create reserved paths (`/tests`, `/solution`, `/oracle`).
+- No ground truth, reference outputs, or gold hashes in agent-visible runtime inputs.
+- No build artifacts (`build/`, `bin/`, `target/`, `dist/`, `__pycache__/`, `node_modules/`, etc.) in the submission zip. No files under `environment/{output,out,bin}/` — those directories should not exist in a shipped task. A selective `COPY` in the Dockerfile is not enough — the submission zip is the distribution unit. Pre-computed reference outputs (e.g., `matrix_report.json` containing the test's expected SIGNOFF digests) are a HIGH failure. `run_static_checks.py --only package_hygiene` enforces this. A `.dockerignore` is a belt-and-braces addition, not a substitute.
+- No `--privileged`, `SYS_ADMIN`, or docker.sock mounts.
+- Docker compose does not alter reserved Harbor mounts.
+- `[environment].allow_internet = false` in `task.toml`. (HIGH)
+- Verifier dependencies pinned in `environment/Dockerfile`, NOT installed at runtime in `tests/test.sh` (no `apt-get install`, `pip install`, `curl`, `uv`/`uvx`, or `npm install` in the verifier script). (HIGH)
+- Build context does not escape `environment/`.
+
+## 3. Oracle Solution (HIGH)
+
+- Oracle passes consistently — no randomization or hardware-sensitive flakiness.
+- Does not require internet access at runtime.
+- Solves everything in `instruction.md` — real implementation, not hardcoded answers.
+- Milestone tasks: each `steps/milestone_N/solution/solve.sh` is a thin wrapper that calls `solveN.sh` containing only that milestone's commands. There is no top-level `solution/` directory and no root-level `solve.sh` chaining `solve1.sh ... solveN.sh`. Because the container filesystem persists across milestones, `solveN.sh` should reset per-path state explicitly when needed rather than assume a clean slate.
+
+## 4. Verifiers (HIGH unless noted)
+
+- **Standard (Python/pytest) tasks:** `tests/test.sh` matches the official platform template from `task-creation.mdc`. The CI checker textually validates the final 5-line `reward.txt` footer. Do not add `set -euo pipefail`, `set +e`, `status=0`, `$status`, or `exit` after `fi`. (HIGH)
+- **UI tasks:** `tests/test.sh` uses the separate UI template from `task-creation.mdc` (with `set -e`, `UNIT_EXIT`/`E2E_EXIT` variables, and a final assertion after the reward block). The CI checker skips the strict 5-line tail check for UI tasks because they use a different `reward.txt` footer. (HIGH)
+- Same verification logic for oracle and agent runs.
+- **Every shipped test must pass under the oracle.** If the oracle fails any test in the suite, either the oracle or the test is wrong — don't ship it. `verifier_health.py`'s `repeat_oracle` check catches this, but run it before relying on it. Partial-fix inversion tests (shipped tests that are expected to fail under a deliberately crippled build profile) are legitimate, but they must still pass under the oracle's real build. Verify by ablation.
+- Verification deps installed in `environment/Dockerfile` with pinned versions (offline verifier; `allow_internet = false`).
+- Rewards are binary: `0` or `1`.
+- All tests aligned to instruction.md — nothing tested that is not described.
+- Every explicit prohibition/restriction in instruction.md is directly tested.
+- Verifier checks actual correctness, not just format.
+- If instruction specifies schemas, verifier parses and validates those schemas.
+- If verifier depends on dict/map key formats, instruction documents exact key format.
+- **Exact-value assertions on instruction-named output fields must be documented in `instruction.md`.** If your test asserts `report["foo"] == "bar"` or `report["foo"] == 3` and `foo` is a field the instruction names as a required output, then `"bar"` (or `3`) must appear in the instruction text. If it doesn't, either document the expected value or relax the assertion to accept any valid answer. Catches the class of bug where the instruction says a field is required but never defines what values/format are expected — agents meet every stated requirement and still fail the test. `run_static_checks.py --only instruction_test_vocabulary` flags these cases. (MEDIUM — heuristic, surfaced as WARN)
+- **Honest-instruction principle (HIGH)** — `instruction.md` must not cheat the difficulty contract. The mechanical gate's GX9 (contract saturation, blocks answer recital like `counter-restore-replay`) and GX10 (polarity contradiction, blocks ambiguity like `staple-cache-shadow`'s `keeps reuse_gate allow … ending on deny`) close the easily-detected modes. Two more modes require reviewer judgment because they cannot be gated reliably without an LLM: **value over-specification** (instruction lists more candidate values than tests assert without per-scenario binding, like `slot-lineage-drift`'s "twelve then eleven followed by twenty then seven on the ordering pair" — four numbers for two fields) and **undefined metaphor jargon** (coined noun phrases with no env anchor, like `key-ring-alias`'s "in-process lane", "materialize hop", "durable slice"). For value over-spec: confirm each named scenario gets at most one named value AND the scenario→value binding is unambiguous from prose alone. For metaphor jargon: confirm every multi-word noun phrase used to refer to a code construct has at least one of its words appearing in env code, env paths, or env file contents. See `difficulty-calibration.mdc` section A24 for worked examples and the second-batch post-mortem.
+- `verifier.timeout_sec` must be at least `environment.build_timeout_sec` when `tests/` contains a build step (cmake, cargo, go build, make, npm install, pip install from source), and must not exceed the 1800s upstream platform cap. When tests drive 3+ distinct build invocations, require `verifier.timeout_sec > 2 × build_timeout_sec` (still within the 1800s cap). If the required floor exceeds 1800s, the task is doing too much verifier-side work — reduce it (cache the build across scenarios, parallelize with a session-scoped fixture, or split the regression matrix into independent tests), don't argue for a higher budget. Upstream harbor CI hard-rejects any `verifier.timeout_sec > 1800`, regardless of reviewer recommendations. `run_static_checks.py --only timeout_coherence` enforces the floor, the proportional rule, and the platform cap. `agent.timeout_sec` should be at least 2× `verifier.timeout_sec` on build-heavy tasks and is also capped at 1800s.
+- No wall-clock, latency, throughput, or memory assertions. Use deterministic proxies.
+- Verifier modules and any Python under `environment/` pass `ruff` (enforced by `run_static_checks.py`; non-Python sources there are out of scope for ruff).
+- `test_outputs.py` exposes discoverable `test_...` functions. (MEDIUM)
+- Milestone tasks: one `steps/milestone_N/tests/test_mN.py` per milestone with assertions in a single `TestMilestoneN` class, plus a per-milestone `steps/milestone_N/tests/test.sh` runner. Each milestone's test file scores only that milestone (not future work) and tolerates state left behind by previous milestones. No root-level `tests/` directory.
+- UI tasks: both unit and E2E verifiers run from `test.sh`. **NEW UI tasks are no longer accepted** — see § 8 Task types below.
+
+## 5. Task Metadata (HIGH unless noted)
+
+- `task.toml` uses `version = "2.0"` with all required fields under `[metadata]`. No Harbor-framework-only fields (`schema_version`, `[task]`, `min_reward`, `[steps.healthcheck]`, `[steps.verifier.env]`, `artifacts`, `multi_step_reward_strategy`, `workdir/setup.sh`).
+- Difficulty, codebase size, and languages satisfy acceptance gates.
+- `codebase_size` matches actual file count under `environment/` (excluding Dockerfile/docker-compose): 20-200 = `small`, 200+ = `large`. Under 20 files = `minimal` and is a blocking failure on the default Edition 2 path. (HIGH)
+- `[environment]` includes `allow_internet = false`, `cpus`, `memory_mb`, `storage_mb` (positive integers).
+- `tags` contains 3–6 descriptive values without redundant filler.
+- No `task_subtypes` — use `subcategories`. (MEDIUM)
+- Tool-driven tasks include `tool_specific` in `subcategories`. (MEDIUM)
+- `number_of_milestones` matches actual milestone count (0 for non-milestone). For milestone tasks, it MUST equal the number of `[[steps]]` blocks.
+- Author placeholders kept anonymous (`"your-name"` / `"your-email"` / `"anonymous"`). Real author identifiers are a HIGH failure.
+- Milestone tasks: one `[[steps]]` block per milestone, `name = "milestone_N"` matching the folder under `steps/`, per-step `[steps.agent]` and `[steps.verifier]` timeout blocks, no top-level `[agent]` / `[verifier]` blocks. `[environment]` stays global (one container shared across all milestones).
+- Docker compose tasks flagged: `custom_docker_compose = true`, `is_multi_container = true` if applicable. **NEW multi-container tasks are no longer accepted** — see § 8 Task types below.
+
+## 6. Task Structure (HIGH unless noted)
+
+- All required files present (varies by task type — see `task-creation.mdc`):
+  - **Standard:** `instruction.md`, `task.toml`, `output_contract.toml` (authoring metadata, not shipped in zip), `environment/Dockerfile`, `solution/solve.sh`, `tests/test.sh`, `tests/test_outputs.py`.
+  - **Milestone:** `task.toml` (with `[[steps]]` blocks), `output_contract.toml`, `environment/Dockerfile`, and one `steps/milestone_N/` directory per milestone — each containing `instruction.md`, `tests/{test.sh, test_mN.py}`, and `solution/{solve.sh, solveN.sh}`. NO top-level `instruction.md`, `tests/`, `solution/`, or `milestones.md` / `milestone_X.md`. The deprecated root-level milestone shape is rejected for new and in-progress submissions.
+  - **UI:** same as standard plus UI test files under `tests/` per the UI template in `task-creation.mdc`. **New UI tasks are no longer accepted** — see § 8.
+- Submission zip has files at archive root (no wrapping folder).
+- For milestone tasks: every `[[steps]].name` matches a `steps/<name>/` folder, and every `steps/milestone_N/` folder is referenced by exactly one `[[steps]]` block. No deprecated `milestone_X.md` / `milestones.md` at any depth.
+- No `rubrics.txt` at task root or zip root.
+- No stray artifacts (`jobs/`, root `README.md`, root `data/`). (LOW)
+
+## 7. Difficulty Calibration (HIGH unless noted)
+
+- Collapse check (`collapse_check.py`, RC1-RC7) returns PASS. WARN requires justification. Any FAIL is rejection.
+- RC6 (instruction specificity) must not be `spec-complete`. If the audit reports 3+ triggered families or 2+ strong families, the instruction is acting as the spec — rewrite it symptoms-only.
+- RC7 (oracle triviality) must not be `trivial`. Oracle non-boilerplate LOC ≥ 30 is the mechanical floor; 30-80 is borderline and warrants justification.
+- Every test is independently achievable, not chain-dependent on the full solution.
+- Every test accepts any valid solution approach, not just the oracle's exact output.
+- `verifier_health.py` is an **opt-in diagnostic** (Step 3a-V). When run, it must PASS with a behavioral partial-oracle failure. Routine tasks can approve with `--skip-verifier-health`.
+- Oracle passes and NOP fails (Step 2b preflight, 10/10 and 0.0 respectively). Post-upload evaluation on the platform is outside this repo-local gate.
+
+## 8. Task types (HIGH)
+
+- We are NO LONGER accepting new **multi-container** tasks (`is_multi_container = true` or any `environment/docker-compose.yaml` declaring multiple services).
+- We are NO LONGER accepting new **UI building** tasks (subcategory `ui_building` or use of the UI test template).
+- In-progress tasks of these types may be completed; they will not be rejected solely for type. Reviewers should prioritize moving in-progress instances to submission before the block goes live.
+- New starts in either category are blocked. If a candidate idea would naturally land as multi-container or UI building, the right move is REJECT with a redesign note (or, in Step 2a, reject before drafting).
+
+## 9. Rubric (milestone tasks) (HIGH)
+
+- Each milestone gets **10–40 points** of maximum cumulative score (sum of positive criteria for that milestone). Scaling: 1 milestone → 10–40 pts; 2 → 20–80 pts; 3 → 30–120 pts; N → between (N × 10) and (N × 40) pts.
+- The non-milestone rubric range (10–40 maximum cumulative score from positive criteria) still applies to standard tasks.
+- See `TASK_PROPOSAL_RUBRIC.md` for the line-item rubric authoring rules.
+
+---
+
+## Common Issues to Flag
+
+### Instruction problems
+
+- Ambiguous requirements ("Make it better")
+- Tests check files not mentioned in instruction
+- Relative paths instead of absolute
+- Task name leaked in instruction.md
+- Milestone task: any preview/spoiler of later milestones inside an earlier milestone's `instruction.md`; missing "signal completion" rule in any per-milestone instruction; root-level `instruction.md` / `milestones.md` / `milestone_X.md` present (deprecated)
+- Prescribed function signatures, file layouts, library names, or build commands the agent should derive
+- GPT-style verbose, polite, or exhaustively structured prose; roleplay intros; emojis
+- Bold markers emphasizing solution-adjacent values or thresholds
+
+### Test problems
+
+- Brittle exact-string matching
+- Requirements without corresponding tests
+- Named restriction in instruction has no direct test
+- Schema promised but never parsed in tests
+- Dict/map key format not documented but tested
+- `test.sh` can exit before writing reward file (the official template avoids this by not using `set -e`)
+- Pass/fail depends on runtime speed or peak memory
+- Test deps in Dockerfile (leaks hints)
+- Unpinned verifier deps
+- test.sh deviates from verbatim template — any structural change to the fixed parts (control flow, variable names, reward footer, exit) is a HIGH rejection even if functionally equivalent
+- Test execution order dependency
+- Tests parse source code instead of checking behavior
+- Single-path-only test (only oracle's approach passes)
+- Chain-dependent test (requires full solution for any individual test to pass)
+- Overly-specific assertion (exact value when multiple valid answers exist)
+- Flaky test (timing-dependent, race conditions, subprocess without retries, file-system polling without adequate waits)
+
+### Environment / structure problems
+
+- Missing WORKDIR in Dockerfile
+- Dockerfile copies tests/solution/oracle into image
+- `rubrics.txt` included in zip
+- Milestone tasks using deprecated root-level layout (top-level `instruction.md` / `tests/` / `solution/` / `milestones.md` / `milestone_X.md`); per-milestone content not under `steps/milestone_N/`
+- AI-specific filenames present anywhere in the archive (`CLAUDE.md`, `skills.md`, `AGENTS.md`, `.cursor/`, …)
+- Hidden agent instructions in environment files (HINT:/STEP N: walkthroughs, "to solve this..." phrasing)
+- LICENSE file included on a small/minimal codebase, or a license other than MIT / Apache 2.0 / BSD on a large codebase
+- Unpinned apt packages in Dockerfile
+
+### Metadata problems
+
+- `task_subtypes` used instead of `subcategories`
+- Missing `tool_specific` when task depends on specialized tools
+- Blocked acceptance gate (easy, medium, minimal, Python + not hard)
+- Tags outside 3–6 range or padded with filler
+- Milestone task: `number_of_milestones` does not equal the number of `[[steps]]` blocks; top-level `[agent]` / `[verifier]` blocks present; `[[steps]].name` does not match the `steps/<name>/` folder
+- Harbor-framework-only fields used (`schema_version`, `[task]`, `min_reward`, `[steps.healthcheck]`, `[steps.verifier.env]`, `artifacts`, `multi_step_reward_strategy`, `workdir/setup.sh`)
+- Author identifiers replaced with real names/emails instead of anonymous placeholders (`"your-name"` / `"your-email"` / `"anonymous"`)
+- New task is multi-container or UI building (no longer accepted)
+
+---
+
+## Static Checks To Run
+
+Before packaging or claiming "ready", use the task-scoped static checker for repo-local structural/compliance checks only. It does not replace `collapse_check.py` or the Harbor quality check:
+
+```bash
+python3 run_static_checks.py --task-dir tasks/<task-name> --version edition_2
+```
+
+This checker objectively enforces the current public-contract rules for declared user-visible outputs, literal `internal_harness_files` leakage in `instruction.md`, and milestone signal-completion directives. It also runs five root-cause checks added to catch the specific failure modes that slipped past earlier reviews:
+
+- `dockerfile_copy_sources` — every `COPY`/`ADD` source path resolves in `environment/`. Catches dead references where the referenced file was never committed.
+- `package_hygiene` — no build artifact directories (`build/`, `bin/`, `target/`, `dist/`, `node_modules/`, `__pycache__/`, etc.) anywhere under `environment/`; no pre-computed outputs under `environment/{output,out,bin}/`. Catches leaked golden digests.
+- `shell_script_integrity` — any file with a `#!` shebang must have LF line endings. CRLF on shebanged scripts makes the kernel look for `/bin/bash\r` as the interpreter and fail with exit 127 ("required file not found") — a cryptic failure that once blocked a full oracle run. Detects suffix-less scripts too (e.g., `ci/fake_bin/cargo`).
+- `timeout_coherence` — `verifier.timeout_sec ≥ environment.build_timeout_sec` when `tests/` contains a build step. Catches verifier-timeout underfunding.
+- `instruction_test_vocabulary` — exact-value test assertions on instruction-named fields (backticked identifiers) must be grounded in `instruction.md`. Catches undocumented expectations that let agents meet every stated requirement and still fail. Surfaced as WARN.
+
+Do NOT run bare `ci_checks/*.sh` scripts without a task path — they scan all `tasks/` by default, and legacy tasks will cause spurious failures.
+
+If `ruff` is available: `ruff check tasks/<task-name>`.
+
+## Packaging Verification
+
+```bash
+cd tasks/<task-name>
+zip -rq ../../Task_Ready_To_Submit/<task-name>.zip . -x '*/__pycache__/*' '*.pyc' '.*'
+python3 ../../validate_submission_zip.py ../../Task_Ready_To_Submit/<task-name>.zip
+```
+
+Always run `validate_submission_zip.py` immediately after creating a submission zip. Any non-PASS result is blocking and must be fixed before continuing.
+
+Verify: `instruction.md`, `task.toml`, `environment/`, `solution/`, and `tests/` at archive root. Append `--json` for machine-readable output.
+
+## Review-Loop Discipline
+
+The review loop must stay cheap. Oracle + NOP preflight run **once** in Step 2b (see `workflow-prompts.md`), not once per iteration. The GPT-5.2 quality check (`harbor tasks check`) and `verifier_health.py` are both **opt-in diagnostics** (Step 3a-Q and Step 3a-V respectively). Skip them for routine tasks.
+
+**When to reach for `verifier_health.py`** (otherwise skip it):
+
+- Platform agent trials scored 0/10 while Step 2b's oracle + NOP look healthy → run the default pass to check randomized-order and partial-oracle discrimination.
+- A specific test looks chain-dependent, order-sensitive, or flaky → narrow with `--only randomized_order` / `--only partial_oracle` and `--focus seed=N` / `--focus variant=LABEL`.
+- A reviewer asked for partial-oracle ablation evidence.
+- Step 2b's 10x oracle stress shows intermittent failures → add `--include-repeat-oracle`.
+
+**When to reach for the quality check** (otherwise skip it):
+
+- A reviewer asked for the GPT-5.2 rubric audit.
+- You want to pressure-test instruction/test wording against an LLM judge before final review.
+
+Iteration helpers (when a diagnostic IS running):
+
+- `--only CHECK` / `--skip CHECK` — narrow or exclude named checks. Conflicts raise; empty selections raise.
+- `--focus seed=N` / `--focus variant=LABEL` — narrow within a selected check to a single failing seed or ablation variant.
+- `--jobs N` — control parallelism. Default `min(os.cpu_count() or 2, 5)`; `--jobs 1` for serial debugging.
+
+`--include-repeat-oracle` is expensive (~5 back-to-back oracle runs). Pass it only when Step 2b's stress itself looked flaky, not "just to be safe".
+
+## Single Approval Gate
+
+Before claiming a task is approved or ready, run the repo's single approval gate:
+
+```bash
+# Routine path — verifier-health is opt-in:
+python3 approve_task.py --task-dir tasks/<task-name> \
+    --zip Task_Ready_To_Submit/<task-name>.zip \
+    --skip-verifier-health
+
+# Escalated path — Step 3a-V was run:
+python3 verifier_health.py --task-dir tasks/<task-name> \
+    --output-json /tmp/<task-name>-verifier-health.json
+python3 approve_task.py --task-dir tasks/<task-name> \
+    --zip Task_Ready_To_Submit/<task-name>.zip \
+    --verifier-health /tmp/<task-name>-verifier-health.json
+```
+
+`--verifier-health` and `--skip-verifier-health` are mutually exclusive. Omitting both yields a WARN (not a block) to remind you the diagnostic exists.
+
+`approve_task.py` is the authoritative repo-local approval gate. It bundles `run_static_checks.py`, `collapse_check.py` (RC1-RC7), `validate_submission_zip.py`, manifest verification, zip/source parity, and — when attached — the verifier-health report and quality-check adjudication artifact. Exit 0 is required before any `ACCEPT`, `ACCEPT WITH NOTES`, or "ready" claim.
+
+---
+
+## Decision Criteria
+
+Use exactly one of these decisions. Do NOT use "ACCEPT WITH NOTES" to defer concept-level problems. The legacy "SEND FEEDBACK" verdict is no longer a valid choice — if the task is not salvageable through ACCEPT WITH NOTES, the right call is REJECT plus a one-paragraph note on what would need to change for a redesigned attempt.
+
+### ACCEPT
+
+All of these must be true:
+
+- Oracle 1.0 (Step 2b preflight, 10/10), NOP 0.0
+- `collapse_check.py` returns PASS overall (every RC1-RC7 is PASS or a documented WARN)
+- RC6 classification is `symptoms-only` or `cause-revealing` (never `spec-complete`)
+- RC7 band is `substantive` or `borderline` (never `trivial`)
+- No discoverability signals found
+- If `verifier_health.py` was run (Step 3a-V): PASS with at least one behavioral partial-oracle failure (compile-only ablations do not count). Otherwise the check is reported as N/A in `approve_task.py` via `--skip-verifier-health`.
+- All static checks pass (WARNs acceptable)
+- If the quality check was run (Step 3a-Q): adjudicated via `quality_check_adjudicate.py` with no `task-defect` entries; every fail has evidence-backed `convention-conflict` or `unsupported` classification (or the checker reported no fails). Otherwise the adjudication is reported as N/A.
+- No concept-level findings remain
+
+### ACCEPT WITH NOTES
+
+Same as ACCEPT, except:
+
+- `collapse_check.py` returns WARN (not FAIL) with documented residual hardness
+- Minor mechanical issues remain that don't affect difficulty
+
+**ACCEPT WITH NOTES is NOT allowed when any of these are true:**
+
+- Any `collapse_check.py` check is FAIL, including RC6 `spec-complete` or RC7 `trivial`
+- `verifier_health.py` was run (Step 3a-V) and returned FAIL (including all-pass partial-oracle ablations or no behavioral verifier discrimination)
+- Discoverability signals were found but not fixed
+
+### REJECT
+
+Any of these is true:
+
+- `collapse_check.py` returns FAIL after attempted fixes
+- Oracle cannot reach 1.0
+- NOP scores above 0.0 and can't be fixed
+- Task fails a hardness axis (Discover, Synthesize, Diagnose, Navigate coupling, Reason beyond training)
+- The concept is unsalvageable through small fixes (would have been "SEND FEEDBACK" under the legacy criteria) — REJECT with a one-paragraph note describing what restructuring a future attempt would need
+
+### Blocking conditions (cannot be deferred with a NOTE)
+
+These must be resolved before any form of approval:
+
+1. **`verifier_health.py` WAS RUN AND does not show a behavioral partial-oracle failure** → this condition applies only when Step 3a-V was invoked. If every partial fix still passes, or the only failures are compile-only breakage, the verifier does not prove it discriminates between partial and complete fixes. Fix the tests or the ablation strategy. Tasks where `verifier_health.py` was not run (routine path, `--skip-verifier-health`) are not blocked by this rule.
+2. **Discoverability signals found but not eliminated** → `(void)` casts next to zero overrides, `// BUG:` comments, compile flags, hardcoded zeros where fields should be — these must be fixed, not noted.
+3. **`collapse_check.py` FAIL** → at least one mechanical collapse signal is fatal. Fix the flagged issue (rewrite the instruction symptoms-only for RC6, enlarge or restructure the oracle for RC7, rename files, restructure oracle, add output validation to tests, etc.) before any form of approval.
+4. **Quality check was run AND a `task-defect` entry remains** → this condition applies only when Step 3a-Q was invoked. Every `❌ fail` from `harbor tasks check ... -m openai/gpt-5.2` must be classified via `quality_check_adjudicate.py`. Findings classified `task-defect` are blocking and must be repaired before any form of approval. Findings classified `convention-conflict` (the checker's remedy contradicts a rule enforced by `run_static_checks.py`, `collapse_check.py`, or the canonical templates in `task-creation.mdc`) or `unsupported` (the finding cites behavior/files/fields that do not exist in the task) are waivable only when the adjudication entry carries the required evidence — `enforcing_rule.file`+`line` for conventions, `negative_lookup.command`+`expected_stdout` for unsupported. The adjudication artifact `/tmp/<task-name>-quality-check-adjudication.json` is required input to `approve_task.py` when the quality check was run; regenerate it by running `python3 quality_check_adjudicate.py --task-dir tasks/<task-name> --qc-output /tmp/<task-name>-qc.json` after every `harbor tasks check` capture. Never over-specify `instruction.md` or restructure tests purely to pacify a hallucinated finding — adjudicate it instead. Tasks where the quality check was not run are not blocked by this rule.
+5. **Environment file count below 20** → the task is `minimal`, which is blocked on the default Edition 2 path. Add substantive environment files or redesign the task before any form of approval.
+
+---
+
+## Interpreting Results
+
+### Oracle failed or NOP passed
+
+Focus on: solution may be incomplete or non-deterministic, tests may be wrong or too weak, instruction and verifier may be misaligned, task may be trivial or accidentally satisfied by the base environment.
+
+### Collapse audit is WARN or FAIL
+
+The task may be too easy despite passing Oracle/NOP: solve path too obvious, oracle too localized, requirements map 1:1 to obvious code sites, task is a recipe/checklist/policy-knob transcription.
+
+### Oracle discoverability (HIGH)
+
+Could the agent find where and what to fix without doing the hard intellectual work the task demands? Use the solver-visible file-surface policy from `@task-creation.mdc`: `instruction.md`, everything under `environment/`, everything under `tests/`, and the file/directory names within those surfaces. On the current repo policy, `task.toml` and `output_contract.toml` are authoring/package metadata, not solver-visible file surfaces for this gate. If you ran the task, also check runtime error output. If any of those channels shortcut the domain reasoning the task is supposed to test, the signal must be eliminated while preserving difficulty.
+
+### Per-test feasibility flags HIGH-risk tests
+
+The task may be too hard for specific tests. Fix by: loosening assertions to accept any valid solution, making chain-dependent tests set up their own preconditions, verifying two valid approaches would pass each test.
+
+### Hard and aligned but only mechanical issues
+
+Say so explicitly. Do not imply the task concept is weak when the only issues are verifier setup, dependency placement, timeout tuning, or metadata compliance.
+
+### Fix Classification
+
+- **Concept-level**: affects difficulty, task design, instruction/verifier alignment, cheating resistance, solution semantics, or per-test feasibility
+- **Mechanical/compliance-level**: verifier dependency placement, timeout tuning, reward-footer formatting, metadata fields, and similar repo-policy issues
+- If findings are mechanical only, do not recommend weakening or redesigning the core task
+- Prefer the smallest fix that resolves the issue while preserving task semantics
+
+---
+
+## Final Rule
+
+Do not tell the user the task is ready until:
+
+- This checklist has been applied
+- The difficulty calibration from `difficulty-calibration.mdc` has been run
+- Oracle (10/10) and NOP (0.0) have been executed in Step 2b (not just claimed)
+- No HIGH-severity issues remain
+- No blocking conditions are unresolved (see Decision Criteria above)
+- If `verifier_health.py` was run (Step 3a-V), it PASSED and recorded a behavioral partial-oracle failure
+- `approve_task.py` exited 0 (with `--skip-verifier-health` on the routine path or `--verifier-health <path>` when Step 3a-V was invoked)
+- The decision follows the criteria above — do not use ACCEPT WITH NOTES to defer concept-level problems. SEND FEEDBACK is no longer a valid verdict; use REJECT with a redesign note instead.

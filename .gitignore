@@ -1,0 +1,36 @@
+# Environment
+.env
+.env.*
+
+tasks/
+specs/
+summary/
+jobs/
+
+# Validation working state
+specs/.*.json
+tasks/*/.step2b-checksum
+tasks/*/.step2b-metrics.jsonl
+
+# STB revision backups (local only)
+Task_Backups/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

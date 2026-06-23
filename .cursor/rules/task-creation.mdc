@@ -1,0 +1,941 @@
+---
+description: Construction discipline for Step 2b — file layout, instruction.md / task.toml / output_contract.toml / Dockerfile / test.sh / solve.sh / test_outputs.py rules. Pull whenever editing files inside tasks/.
+globs:
+  - "tasks/*/instruction.md"
+  - "tasks/*/task.toml"
+  - "tasks/*/output_contract.toml"
+  - "tasks/*/environment/**"
+  - "tasks/*/solution/**"
+  - "tasks/*/tests/**"
+  - "tasks/*/steps/**"
+alwaysApply: false
+---
+
+# Task Creation
+
+## Construction-to-Spec: the primary authoring discipline
+
+This file is the construction specification for Step 2b. Everything in it is a rule you apply _while drafting_, not a reference you hope to have consulted. Every mechanical and review check that runs after Step 2b — `run_static_checks.py`, `collapse_check.py` RC1-RC7, `@review-and-submit.mdc` §1-7, `@difficulty-calibration.mdc` Part A and Part B — examines something this file already documents. The expected outcome of a disciplined draft is **one-shot PASS through every check**, with the checks functioning as hallucination catchers, not design oracles.
+
+Before touching any file, internalize the full rule set:
+
+- **This file** — file layout, `instruction.md` shape and humanization, `task.toml` metadata, `output_contract.toml` contract, Dockerfile rules, `test.sh` template (standard vs. UI), `solve.sh` discipline, `test_outputs.py` structure, discoverability principles (file, knob, path).
+- **`@review-and-submit.mdc` §1-7** — the post-construction checklist. Every bullet is something you satisfy here, at construction.
+- **`@difficulty-calibration.mdc` Part A** — the collapse audit template. Design the task so the audit returns PASS on the first read (smallest plausible patch is _not_ trivial, editable frontier is not 1-4 obvious files, requirement-to-file map is not 1:1, oracle LOC is substantive, no discoverability signals, no red flags, residual hardness is real).
+- **`@difficulty-calibration.mdc` Part B** — per-test feasibility risks. Avoid creating single-valid-approach, chain-dependent, order-sensitive, flaky, or niche-technique tests _while writing them_.
+
+### RC1-RC7 as construction constraints
+
+`collapse_check.py` checks seven root causes. Each maps to a specific construction rule:
+
+| RC  | Rule                    | Construction-time constraint                                                                                                                                                            |
+| --- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RC1 | Oracle simplification   | `solve.sh` must add logic, not just delete/revert. If the "fix" is `sed -i '/BUG/d'` or reverts a flag, the task is trivial — redesign at the spec level.                               |
+| RC2 | Oracle predictability   | File, directory, and test names must not encode the contract. No `broken_*`, `buggy_*`, `fix_me_*`, `golden_*`, `expected_*` tokens in solver-visible surfaces.                         |
+| RC3 | Verifier shallowness    | Tests assert domain-correct computed values, not format/schema/existence alone. Every explicit prohibition in `instruction.md` has a direct test that catches violations.               |
+| RC4 | Tamper surface          | Tests do not depend on files the agent can rewrite to bypass domain reasoning. Expected values live in test code, not in "golden" files under `environment/`.                           |
+| RC5 | Reference artifacts     | No answer-shaped golden/reference/broken fixtures on solver-visible surfaces (`instruction.md`, `tests/`, `environment/`). Embed expected values in test code.                          |
+| RC6 | Instruction specificity | `instruction.md` stays symptoms-only. No algorithm names, schema enumerations, CLI flag lists, numeric thresholds, file/function locations, cause statements, recipes, binding phrases. |
+| RC7 | Oracle triviality       | `solve.sh` non-boilerplate LOC ≥ 30 (≥ 80 is comfortable). If the genuine fix is <30 LOC, the task is too simple — redesign the concept, do not pad.                                    |
+
+RC6 catches the over-specification direction (instruction names the fix). The under-specification direction (instruction points at a hints file under `environment/`) is governed by Instruction honesty rule 4 — see the "Instruction prose rules" section below.
+
+Construction is spec-aware, not spec-discovering. While writing each file, pre-validate against the rules relevant to that file. If a rule would force you off the authoring spec's design, revise the draft — the rule is from a constraint the spec already assumed.
+
+### Fix-surface construction rules (CR1-CR7)
+
+RC1-RC7 catch structural collapse. CR1-CR7 catch **fix-surface telegraphing**: the code-level signals that let a frontier reader identify the fix site from the file tree alone, before reading any bodies. A draft can pass every RC and still collapse because the drafter picked a clean name for the decision function and filed it in a directory named after the task's core concept. These rules close that channel.
+
+Every CR rule below is enforced mechanically by `collapse_check.py` and traces back to a specific observed trivialization mode in the Apr 2026 audit (5 of 10 shipped tasks trivialized because of signals these rules now catch).
+
+| CR  | Rule                                         | Construction-time constraint                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CR1 | Symbol-table compliance                      | The authoring spec's `symbol_table` names every symbol the oracle touches. Use those names verbatim — do not rename, do not relocate, do not introduce new top-level symbols on the fix path outside the table.                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| CR2 | Flipping-point contract                      | The authoring spec's `flipping_point_contract` names ≥3 fix locations and specifies the test-subset each location controls. The built task must satisfy this contract: reverting any single location must flip only its declared test subset. No single location may flip a majority of tests.                                                                                                                                                                                                                                                                                                                                                                                     |
+| CR3 | Signature opacity                            | Parameter names on the fix path must not lexically or semantically match instruction nouns. Use opaque identifiers (`a`, `b`, `c`; `primary`, `secondary`; `state_x`, `state_y`) or positional parameters. Function signatures on the fix path must not encode the instruction's abstraction (e.g. three parameters named after the three authorities the instruction discusses).                                                                                                                                                                                                                                                                                                  |
+| CR4 | No literal scenario values on fix path       | No string or integer literal that matches a scenario-controlled value may appear in any function body on the fix path. All such values must arrive via parameters, config reads, or state reads. A `"v3"` literal in a function that should respect the active version is a direct tell.                                                                                                                                                                                                                                                                                                                                                                                           |
+| CR5 | No shadow-pair files                         | No two files in the visible codebase may contain function definitions with matching names AND matching or near-matching bodies (≥80% AST similarity). Parallel-package telegraphs (e.g. `pkg_a/choice.py::pick_lineage` and `pkg_b/choice.py::pick_lineage` with identical bodies) let the agent triangulate the fix site from the symbol alone.                                                                                                                                                                                                                                                                                                                                   |
+| CR6 | No intent comments on fix path               | Comments on files the oracle touches may describe mechanics ("sort ascending", "open in binary mode") but must not describe **intent** or **invariants** ("ensures canonical authority survives churn", "required for correct precedence"). Intent comments narrate the fix to the agent.                                                                                                                                                                                                                                                                                                                                                                                          |
+| CR7 | Grep-resistance                              | No function name, top-level class name, parameter name, or path token on the fix path may appear verbatim in `instruction.md` as a noun. Drafter extracts every noun from the instruction, then greps the fix-path symbols — any match is a FAIL.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| CR8 | No central orchestration of fix-path symbols | No single visible file may reference (call, import, or name) more than 2 symbols declared in the authoring spec's `symbol_table`. An orchestrator that exposes the full fix-site call graph in one file (e.g. a `harness/driver.py` that invokes every fix-path function across every scenario) gives the agent the entire fix structure for free. Distribute orchestration across scenario-specific entry points. Apr 2026 `enum-packing-split` post-mortem: 155-LOC `harness/driver.py` called every opaque fix symbol and rendered code-side opacity irrelevant because the driver WAS the spec.                                                                                |
+| CR9 | Test-contract traceability                   | Every string literal, field name, and required value that `tests/test_outputs.py` asserts against must either (a) appear in `instruction.md`, or (b) appear in a code stub/signature/docstring visible to the solver BEFORE applying the fix. Tests must not introduce requirements that have no home anywhere in the visible system. Example failure: test requires `view['norm_token'] == view['digest_hex'][:8]` but neither the instruction nor any pre-fix code stub mentions `norm_token`. The solver has nowhere to learn the contract, so the test is a hidden spec — and 100% of trials fail the same test uniformly (not because the task is hard, because it's broken). |
+
+**Why these are construction-time rules, not post-draft fixes.** Retrofit renames break RC1 (oracle simplification) because the drafter ends up redesigning `solve.sh` to match new names. Retrofit decoy-insertion breaks RC3/RC4 because decoys that don't do real work end up as answer-shaped fixtures. The rules must be followed during first draft, not cleaned up after.
+
+**The symbol table is the primary handoff.** The authoring spec's `symbol_table` and `flipping_point_contract` are not suggestions — they are the construction manifest you fill in. If the spec's table doesn't exist or is underspecified, return to Step 2a rather than inventing the names yourself. Drafter-invented names are the dominant source of CR1/CR3/CR7 failures.
+
+### Instruction prose rules (separate from code-side opacity)
+
+CR1-CR9 govern the **code**: symbol names, file topology, comments, test-to-code traceability. The **instruction** is governed by RC6 (specificity) plus one additional rule whose absence drove the Apr 2026 `enum-packing-split` post-mortem:
+
+**Instruction honesty.** `instruction.md` must be a complete, readable specification of the system's contract at the symptoms-only level. Three concrete requirements:
+
+1. **An expert reading only `instruction.md` must be able to verify from the solver's output alone whether a solution is correct.** If `tests/test_outputs.py` asserts `view['norm_token'] == view['digest_hex'][:8]`, either `instruction.md` states this relationship or a solver-visible code stub documents it. CR9 enforces this mechanically.
+
+2. **Standard domain language, not synthetic jargon.** Terms like "live-read path," "reread-from-disk path," "post-rebuild cleanup" are fine — they are real distinctions a systems engineer recognizes. Terms like "outward slot strings," "material value," "wire family," "barrier view," "durable frontier" are made-up vocabulary that forces the agent to decode from code rather than from the spec. If a term would need a glossary for a domain expert to understand it, replace it with the standard term.
+
+3. **Synthetic data tokens are OK if the instruction names them explicitly.** "The first row maps to `Acme-Crate`, the second to `Beta-Tote`, the third to `Delta-Bin`" is specification. Embedding those values in tests without naming them in the instruction is hidden-spec and CR9 FAILs it.
+
+4. **No instruction by reference.** Every operational fact a solver needs to run the system — the entrypoint command, environment variables required to invoke it, the input/output paths, the schema of the output object — must live inline in `instruction.md`. Pointing the solver at a `.txt`, `.md`, `README`, `hints`, or `notes` file under `environment/` and saying "follow the instructions there" is the same defect as a short instruction with the contract hidden in test code: the solver-visible system no longer has a single source of truth. The dishonest variant often hides behind length-cap reasoning ("instruction.md is getting too long, move the mechanics elsewhere"). Instruction by reference is not a length-cap workaround — it is a `task-creation.mdc` Instruction honesty rule 4 violation. If `instruction.md` would otherwise exceed the static-check length WARN band, accept the WARN with reviewer documentation rather than splitting the contract across files. Files under `environment/` may contain _implementation hints_ the solver discovers (a docstring on a function explaining its expected behavior, a comment in a config file, a `README.md` describing one subsystem's responsibility) — those are part of the codebase the solver reads to diagnose the bug. They must not contain the _operational contract_ (how to run the system, what output to produce, what the output schema is) that belongs in `instruction.md`.
+
+   The diagnostic test for instruction by reference: if a fresh solver had only `instruction.md` and the `environment/` source code (no `.txt`/`.md` hint files at all), could they figure out how to run the system and produce the expected output? If no, the operational contract is split. Move it back into `instruction.md`.
+
+**What "instruction honesty" does NOT mean.** It does not mean naming the fix location — that is a RC6 violation. It does not mean listing algorithm names or implementation details — those are RC6-forbidden. Honest means "anyone reading this can verify correctness from the output"; it does not mean "anyone reading this can infer the fix site."
+
+The `code_forbidden_tokens` field in the authoring spec's construction manifest applies to **code symbols only**. It does not restrict instruction vocabulary. A drafter who sees `code_forbidden_tokens: [lineage, authority, precedence]` and writes an instruction avoiding all three words has misread the rule — the instruction may use those words freely; only the code symbols on the fix path must avoid them.
+
+### Don't cheat the difficulty contract through `instruction.md`
+
+`instruction.md` cheating happens in two opposite directions, and both produce the same downstream collapse: the difficulty rating becomes a measurement of the prose, not of the engineering work. Hard tasks are hard because the WORK is hard — finding bugs, designing fixes, debugging cross-component invariants — not because the instruction is over-helpful or deliberately obscure. The Apr 2026 second-batch post-mortem on `counter-restore-replay`, `slot-lineage-drift`, `key-ring-alias`, and `staple-cache-shadow` made each direction concrete:
+
+**Direction 1 — Make-it-easy by reciting the test contract** (drives tasks toward trivial / easy):
+
+- _Answer recital_ — `counter-restore-replay`'s instruction listed every test triple verbatim ("sk_skew_pair shows 10 in ingress_epoch and 10 in after_first_epoch"). The agent didn't need to read env code at all. The mechanical gate **GX9** measures this: it harvests every test assertion `obj[KEY] OP VALUE`, then checks whether the instruction enumerates the (scenario, key, value) triple within a 400-char window. FAIL above 50% saturation. If you find yourself writing per-row expected values into the instruction, you are reciting the answer key — describe the OBSERVATION instead and let the agent compute the value from env behavior.
+
+**Direction 2 — Make-it-look-hard by obfuscating the contract** (drives tasks toward easy because agents fail on instruction-comprehension, not engineering):
+
+- _Polarity contradiction_ — `staple-cache-shadow`'s instruction said `rho_reuse keeps reuse_gate allow with handoff_u at or below eleven for the numeric climb window, ending on deny past that band`, while tests asserted `reuse_gate == "deny"` AND `handoff_u <= 11`. The literal reading of the prose contradicts what the tests demand. The mechanical gate **GX10** catches this with a closed list of polarity pairs (allow/deny, true/false, set/unset, clean/stale, ok/broken, healthy/broken, accept/reject, valid/invalid, …) — when the instruction's window for a test field contains both polarities within 30-200 chars of each other in the same sentence (no `.`, `;`, `?`, `!` or paragraph break between), it FAILs. If a binary field has different polarities across scenarios, separate them into different sentences/paragraphs so the scope is unambiguous.
+
+- _Value over-specification_ — `slot-lineage-drift`'s instruction said "fused_stride shows two then six on the gate-local slices, twelve then eleven followed by twenty then seven on the ordering pair" — four numbers for two fields (b1, b2) with no per-row anchor. Agents picked the wrong assignment. **GX9 catches this incidentally** (saturation hits 100% via every-value-somewhere coverage), but a future author who lists fewer values could slip through. **Reviewer rule**: any time the instruction lists numeric or string values for a test field, each scenario must get at most one named value AND the binding to the scenario-ID must be unambiguous from prose alone. If you cannot point at one sentence and read off `(scenario_X, field_Y) = value_Z`, the instruction is over-specifying.
+
+- _Undefined metaphor jargon_ — `key-ring-alias`'s instruction used coined noun phrases with no env anchor: `in-process lane`, `outward-only probes`, `materialize hop`, `durable slice`. The agent had no way to map these to code constructs. The judge's verdict was _"the critical requirement … is buried in cryptic language."_ This is the same failure as point 2 of "Instruction honesty" above (synthetic jargon), and there is **no reliable mechanical gate** for it — naive unanchored-content-word fraction catches genuine hard tasks at the same 50-80% rate as obfuscated ones. **Reviewer rule**: for every multi-word noun phrase used to refer to a code construct or system part, confirm that _at least one of the words_ appears in env code, env paths, or env file contents. If the entire phrase is coined English with zero env touchpoint, replace it with vocabulary drawn from the codebase.
+
+The four modes are detailed in `difficulty-calibration.mdc` section A24 with worked examples. The mechanical gate (GX9, GX10) closes the easily-gameable holes on direction 1 and the contradiction sub-mode of direction 2. The remaining sub-modes of direction 2 are reviewer responsibility — a task that passes all 23 mechanical checks can still violate the honest-instruction principle on the value-over-spec or metaphor-jargon axis, and the reviewer must catch those before submission.
+
+## Before Writing Any Code
+
+Ask for ALL missing required fields BEFORE writing code:
+
+1. **Task Idea**: What problem should the agent solve?
+2. **Programming Language**: What language(s)? (Avoid Python unless justified — Python tasks must be hard.)
+3. **Difficulty Level**: hard only for the default Edition 2 path
+4. **Category**: system-administration | build-and-dependency-management | data-processing | games | software-engineering | machine-learning | debugging | security | scientific-computing
+5. **Task Name**: kebab-case (e.g., `distributed-trace-analysis`)
+
+Optional: `subcategories`, `number_of_milestones`.
+
+Fixed values: `author_name = "anonymous"`, `author_email = "anonymous"`, `version = "2.0"`.
+
+## Acceptance Gates
+
+- `minimal` codebase size: blocked on platform and treated as a blocking authoring failure in this repo. Count files under `environment/` EXCLUDING Dockerfile/docker-compose — must be 20+ for `small`. Treat this as a minimum realism floor, not as evidence of hardness. If you are below it, add genuine supporting modules, data, configs, or headers that the task actually needs; do not hover at exactly 20 or pad with empty files.
+- `easy` and `medium` difficulty: blocked on the default Edition 2 path. Use `hard`.
+- Python tasks: accepted only when empirical difficulty is `hard`.
+- Avoid FastAPI.
+
+## Task types we no longer accept
+
+- We are NO LONGER accepting new **multi-container** tasks.
+- We are NO LONGER accepting new **UI building** tasks (i.e., tasks whose `subcategories` includes `ui_building` or which use the UI test template).
+- Do not start new tasks in either category.
+
+This applies to construction (Step 2b) and to idea validation (Step 2a) — when validating an idea that would naturally land as multi-container or UI building, the right move is to redesign or reject rather than carry it forward.
+
+## File Layout
+
+### Standard task
+
+```
+<task-folder>/
+├── instruction.md
+├── task.toml
+├── output_contract.toml
+├── environment/
+│   ├── Dockerfile
+│   └── .dockerignore   # required for non-trivial contexts; ship in submission zip
+├── solution/
+│   └── solve.sh
+└── tests/
+    ├── test.sh
+    └── test_outputs.py
+```
+
+### Milestone task
+
+**Authoritative milestone shape** — this is the canonical layout for milestone (multi-step) tasks. Our internal "Understanding Milestones" doc is the source of truth and overrides any wider Harbor framework documentation: the framework supports more features than we use; do not introduce them here.
+
+```
+<task-folder>/
+├── task.toml                       ← uses [[steps]] blocks; version = "2.0"
+├── environment/
+│   ├── Dockerfile
+│   ├── .dockerignore               ← required for non-trivial contexts; include in zip
+│   └── ...                         ← any environment files
+└── steps/                          ← all per-milestone content lives here
+    ├── milestone_1/
+    │   ├── instruction.md          ← prompt the agent sees for milestone 1
+    │   ├── tests/
+    │   │   ├── test.sh             ← pytest runner; writes /logs/verifier/reward.txt
+    │   │   └── test_m1.py          ← pytest assertions in class TestMilestone1
+    │   └── solution/
+    │       ├── solve.sh            ← wrapper that calls solve1.sh
+    │       └── solve1.sh           ← oracle solution for milestone 1 only
+    ├── milestone_2/
+    │   └── ...                     ← same structure (test_m2.py, solve2.sh, ...)
+    └── milestone_3/
+        └── ...
+```
+
+**Mandatory naming.**
+
+- Step folders MUST be `milestone_1`, `milestone_2`, ... (snake_case, sequential).
+- `[[steps]].name` in `task.toml` MUST match the folder name.
+- The per-milestone test file MUST be `test_mN.py` with assertions in a `TestMilestoneN` class.
+- The per-milestone oracle script MUST be `solveN.sh`, called by that milestone's `solve.sh` wrapper.
+
+**Forbidden at the task root for milestone tasks.**
+
+- No top-level `instruction.md` (it will be ignored).
+- No top-level `tests/` directory.
+- No top-level `solution/` directory.
+- No top-level `milestones.md` or `milestone_X.md` files.
+- No top-level `[agent]` or `[verifier]` blocks in `task.toml` — those are per-step only.
+
+**Filesystem persistence note.** The container filesystem is shared across milestones, so files left by milestone N (by the agent or by `solveN.sh`) are visible to milestone N+1. This is intentional — milestones are designed to build on each other — but the author must avoid clobbering files an earlier milestone created. If milestone 2 needs a clean state for some path, have `solve2.sh` reset that path explicitly rather than assuming a clean slate.
+
+#### Per-milestone instruction.md
+
+Each milestone has its own `instruction.md` containing ONLY that milestone's prompt. The agent sees only the current milestone's instruction while working on it.
+
+- Milestone 1's `instruction.md` should include the overall task context the agent needs to get oriented (it is the first thing the agent reads).
+- Subsequent milestones can be shorter — describe only the new requirements, building on what is done.
+- Do NOT preview, hint at, or "spoil" later milestones.
+
+#### Per-milestone tests/
+
+Each milestone's `tests/` contains:
+
+- `test.sh` — runs pytest on that milestone's test file, then writes `1` or `0` to `/logs/verifier/reward.txt` based on the result.
+- `test_mN.py` — pytest assertions for milestone N, organised in a single `TestMilestoneN` class.
+
+Each milestone's tests must:
+
+- Score only that milestone's completion (not future milestones).
+- Be deterministic (clean pass/fail).
+- Tolerate any state left behind by previous milestones.
+
+#### Per-milestone solution/
+
+Each milestone's `solution/` contains:
+
+- `solve.sh` — a small wrapper that runs the milestone's oracle script. Pattern:
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  bash "$SCRIPT_DIR/solve1.sh"
+  ```
+- `solveN.sh` — the actual oracle, containing ONLY the commands required for milestone N.
+
+Keep the existing canary string convention in `solveN.sh` files (Terminal-Bench Canary header).
+
+#### Best practices
+
+- **No leaky milestones.** Ensure milestone N+1 cannot pass if milestone N fails. Each milestone must depend on the previous one being correctly completed.
+- **Clear boundaries.** An agent should know exactly when a milestone is finished from its own `instruction.md`.
+- **Balance — aim for 2–5 milestones.** Avoid over-segmenting. If a task seems to require 10 milestones, combine closely-related ones or focus on the most challenging parts.
+- **Mind the shared filesystem.** Files persist across milestones; have `solveN.sh` reset state explicitly when needed instead of assuming a clean slate.
+- **Nothing at the task root.** No top-level `instruction.md`, `tests/`, `solution/`, or `milestone_x.md` — everything per-milestone lives under `steps/milestone_N/`.
+
+#### Deprecated milestone layout (do not use for new or in-progress tasks)
+
+The old shape — root-level `instruction.md` plus `milestone_1.md ... milestone_N.md`, root-level `tests/` with `test_m1.py ... test_mN.py`, root-level `solution/` chaining `solve1.sh ... solveN.sh` — is deprecated. New submissions and in-progress submissions must migrate to the `steps/milestone_N/` layout above. The migration steps are listed under "Migration checklist for existing milestone tasks" below.
+
+### UI task
+
+```
+<task-folder>/
+├── instruction.md
+├── task.toml
+├── output_contract.toml
+├── environment/
+│   └── Dockerfile
+├── solution/
+│   └── solve.sh
+├── tests/
+│   ├── test.sh
+│   ├── README.md, package.json, .gitignore
+│   ├── playwright.config.ts, vitest.config.ts
+│   ├── unit/, e2e/
+└── index.html
+```
+
+Do NOT include `rubrics.txt` — rubrics are edited in the submission UI.
+
+## instruction.md
+
+### Core principles
+
+1. **Concise** — 1 sentence to 3 paragraphs. 150–200 words of actionable info.
+2. **Well-specified** — Goal must be clear. Not hard via hidden edge cases.
+3. **Interesting** — Real-world value to some group of developers.
+4. **No hints** — Give the **what**, not the **how**. No solution steps.
+5. **Unique** — Distinct from TB2, TB3, and Snorkel Edition 1.
+6. **Absolute paths** — Use `/app/output.txt`, never `./output.txt`.
+
+### Humanization rules
+
+Write like a real engineer prompting Cursor or Claude Code, not like an LLM writing a benchmark. Avoid the "GPT-style" of writing — verbose, repetitive, overly polite, exhaustively formatted.
+
+**These rules are the construction-time version of RC6 (instruction specificity). Every signal listed below is also something `collapse_check.py` RC6 or `instruction_audit.py` will detect — satisfy them here so those checks pass on first run.**
+
+Remove these synthetic smells:
+
+- Roleplay boilerplate ("You are an expert programmer…")
+- Step-by-step walkthroughs that give away the approach
+- Verifier-centric phrasing ("The verifier will inspect…")
+- Redundant context restating the same requirement multiple ways
+- Over-formatting with multiple headers, nested bullets, checklists
+- Hint leakage naming the exact algorithm or broken file
+- Prescribed implementation scaffolding — exact function signatures, exact file layouts, named libraries, or named build commands when the agent should be figuring those out. Specifying the contract an output must satisfy is fine; specifying the code shape that produces it is a hint.
+- Emojis and decorative unicode. Scattered bold markers on solution-adjacent phrases ("**Policy limit**: $500") also count — they telegraph where the answer is.
+
+RC6 signal families to explicitly avoid (each triggers the mechanical check):
+
+- **Named algorithms** — "CRC32", "HMAC-SHA256", "AES-GCM", "Kahan summation", "two-pointer", "backtracking" → describe what the output must be, not how to compute it.
+- **Schema enumerations** — listing every key of every structured output with its type. Document the overall contract in prose; let the agent derive the schema from behavior.
+- **API/CLI enumerations** — listing every flag, subcommand, or method signature. Describe the observable behavior; let the agent discover the interface.
+- **Numeric thresholds** — "tolerance 1e-6", "must converge in 50 iterations", "block size 4096" → describe what "correct" means; let the agent derive any required numeric choice.
+- **Binding phrases** — "you must", "the algorithm is", "the formula is", "defined as", "equivalent to" → replace with descriptive language about observed behavior.
+- **Scope closures** — "and nothing else", "only these fields", "exactly these steps" → these lock the agent into the oracle's exact approach; allow multiple valid approaches.
+- **File/function locations** — "edit `src/parser.c` line 42", "modify `parse_header()`", "the bug is in the token-counting loop" → describe the symptom, not the location.
+- **Cause statements** — "because the hash is truncated", "this is caused by signed overflow" → describe what's observed, not what's responsible.
+
+Replace with:
+
+- Direct problem statement
+- Desired end state and required outputs
+- Key constraints only
+- Short prose or a small bullet list when it genuinely helps readability
+
+Vary the style across tasks. Some terse, some conversational, some structured. Not every task needs headers or bullet lists. A 150–200 word human-voiced paragraph is usually better than 500+ words of structured documentation.
+
+**There is no instruction.md template and there should not be one.** Do not copy the shape of a previously-approved task's instruction. If every approved task opens with "Repair the X under /app/src." and ends with a schema block, that's a training signal the agent can exploit, and it's also boring. Real engineers prompt Cursor and Claude Code in wildly varying voices: a one-sentence bug report, a Slack-paste with a stack trace, a rambling walk-through of what they've already tried, a terse imperative. Match that range. Reviewers should ask "does this sound like something a human engineer would actually type?" before "does it follow the house style?" — because there is no house style. The instruction-test vocabulary check (`run_static_checks.py --only instruction_test_vocabulary`) verifies that whatever voice you pick, every exact-value assertion in tests is grounded in instruction.md text.
+
+### Contract requirements
+
+- List ALL user-visible outputs declared in `output_contract.toml`
+- If structured data output, document the exact schema declared in `output_contract.toml`, including field names, types, and keys
+- Do NOT surface `internal_harness_files` in instruction.md unless the same path is also declared in `user_visible_outputs`; `run_static_checks.py` enforces this literal path rule
+- Do not mention specific tools unless the verifier can prove tool usage
+- Do not include the task name or legacy canary strings
+
+### Milestone-specific
+
+The canonical milestone layout is described under "Milestone task" in the File Layout section above. Key per-milestone instruction rules:
+
+- Each milestone has its OWN `steps/milestone_N/instruction.md` containing only that milestone's prompt. The agent sees only the current milestone's instruction while working on it.
+- `steps/milestone_1/instruction.md` should include the overall task context (it is the first thing the agent sees).
+- `steps/milestone_2/instruction.md` through `steps/milestone_N/instruction.md` describe only the new requirements for their milestone, building on what previous milestones established.
+- Do NOT preview, hint at, or "spoil" later milestones from an earlier milestone's instruction.
+- Keep milestone instructions concise. Milestone 1's instruction may be longer because it carries the task introduction; subsequent milestones should be shorter.
+- Tell the agent to signal completion before advancing. `run_static_checks.py` fails milestone tasks that omit a signal-completion directive (the rule fires per-milestone-instruction now). Use neutral wording such as `signal completion`, `let me know when … done`, or `mark … complete` — none of those require the literal word "milestone".
+- There is NO top-level `instruction.md` or root-level `milestones.md` / `milestone_X.md` file. Anything at the task root is ignored. See `REPO_CONVENTIONS.md` § "The literal word 'milestone' in instruction.md is a (non-blocking) warning" for the prose-only nuance: per-milestone instructions should still avoid the word "milestone" itself in agent-facing prose.
+
+## task.toml
+
+**Construction-time constraints this section enforces.** `task.toml` is validated by `run_static_checks.py --only task_toml` and related checks. The rules below are all enforced:
+
+- `version = "2.0"` required. Do NOT use `schema_version`, a top-level `[task]` block, or any other Harbor-framework-only fields (`min_reward`, `[steps.healthcheck]`, `[steps.verifier.env]`, `artifacts`, `multi_step_reward_strategy`, `workdir/setup.sh`). These are not part of our convention even when the wider framework supports them.
+- All `[metadata]` fields present with valid values
+- `timeout_coherence`: `verifier.timeout_sec ≥ environment.build_timeout_sec` when `tests/` invokes a build step; `verifier.timeout_sec ≤ 1800` and `agent.timeout_sec ≤ 1800` (hard platform cap)
+- `codebase_size` must match actual env file count: `minimal` (0-19, blocked), `small` (20-200), `large` (200+)
+- 3-6 `tags`, no filler padding
+- `subcategories` (not `task_subtypes`); subcategory values restricted to `long_context`, `tool_specific`, `api_integration`, `db_interaction`, `ui_building`
+- `number_of_milestones` must match actual milestone count (0 for non-milestone) AND must equal the number of `[[steps]]` blocks for milestone tasks
+- For milestone tasks: no top-level `[agent]` or `[verifier]` blocks — those are per-milestone (`[steps.agent]` / `[steps.verifier]`) only. `[environment]` stays global (one container shared across all milestones).
+
+```toml
+version = "2.0"
+
+[metadata]
+author_name = "anonymous"
+author_email = "anonymous"
+difficulty = "hard"
+category = "security"        # one of the 9 accepted values
+tags = ["ssh", "hardening", "chroot"]  # 3-6 descriptive values
+languages = ["bash"]
+codebase_size = "small"      # Count files under environment/ EXCLUDING Dockerfile and docker-compose. minimal (0-19) is a blocking failure on the default Edition 2 path. small (20-200). large (200+). This is a realism floor, not hardness evidence; stay comfortably above it with genuine task components, not filler.
+number_of_milestones = 0     # 0 for non-milestone tasks
+subcategories = []           # or ["tool_specific"], etc.
+expert_time_estimate_min = 30
+junior_time_estimate_min = 120
+
+[agent]
+timeout_sec = 900            # Hard platform cap: 1800. Anything above is rejected by upstream harbor CI.
+
+[verifier]
+timeout_sec = 300            # Hard platform cap: 1800. Raise to ≥ build_timeout_sec if tests/ invokes cmake / cargo / go build / make / npm install / pip install from source. `run_static_checks.py --only timeout_coherence` enforces both the floor (≥ build_timeout_sec when tests do builds) and the ceiling (≤ 1800). If a task needs more than 1800s of verifier time, reduce verifier-side work (cache builds between scenarios, parallelize, split the matrix) — do not argue for a higher budget; the platform will reject it.
+
+[environment]
+allow_internet = false
+build_timeout_sec = 600
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+```
+
+`[environment].allow_internet = false` is required (blocking upstream CI). The verifier runs without network access, so **all verifier dependencies must be installed in `environment/Dockerfile` at image build time** — not in `tests/test.sh` at runtime.
+
+### Milestone task.toml shape
+
+Milestone tasks use the same top-level metadata, but add per-step `[[steps]]` blocks (one per milestone) and remove the top-level `[agent]` / `[verifier]` blocks. `[metadata].number_of_milestones` MUST equal the number of `[[steps]]` blocks.
+
+```toml
+# Task configuration schema version
+version = "2.0"
+
+[metadata]
+author_name = "your-name"
+author_email = "your-email"
+difficulty = "hard"
+category = "software-engineering"
+subcategories = []
+# Total milestone count — must match the number of [[steps]] blocks below
+number_of_milestones = 2
+codebase_size = "minimal"
+languages = ["python", "bash"]
+tags = ["..."]
+expert_time_estimate_min = 60
+junior_time_estimate_min = 120
+
+# Sandbox environment limits — applied across all milestones
+[environment]
+allow_internet = false
+build_timeout_sec = 600.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+workdir = "/app"
+
+# Milestone 1
+[[steps]]
+name = "milestone_1"
+
+[steps.agent]
+timeout_sec = 1200.0
+
+[steps.verifier]
+timeout_sec = 450.0
+
+# Milestone 2
+[[steps]]
+name = "milestone_2"
+
+[steps.agent]
+timeout_sec = 1200.0
+
+[steps.verifier]
+timeout_sec = 450.0
+```
+
+Milestone task.toml rules:
+
+- `version = "2.0"`. Do not use `schema_version`, `[task]`, or any Harbor-framework-only fields (`min_reward`, `[steps.healthcheck]`, `[steps.verifier.env]`, `artifacts`, `multi_step_reward_strategy`, `workdir/setup.sh`).
+- `[metadata].number_of_milestones` MUST equal the number of `[[steps]]` blocks. Set to `0` for non-milestone tasks.
+- `[[steps]].name` MUST be `milestone_1`, `milestone_2`, ... and match the folder under `steps/`.
+- No top-level `[verifier]` or `[agent]` — those are per-milestone (`[steps.verifier]` / `[steps.agent]`) only.
+- `[environment]` is still global — one container shared across all milestones.
+- Keep author placeholders anonymous (`"your-name"` / `"your-email"`, or equivalents like `"anonymous"`). Do not substitute real author identifiers.
+
+Accepted `subcategories` values: `long_context`, `tool_specific`, `api_integration`, `db_interaction`, `ui_building`. Do not use `task_subtypes`.
+
+**Subcategory guardrails (do not label a task with a subcategory unless it meets the criteria):**
+
+- `long_context`: only when the task truly depends on at least 50k tokens of reading (roughly 50-150 pages) AND semantic reasoning. Simple parsing, filtering, or keyword search does not qualify.
+- `api_integration`: only when the API is mocked locally in Docker with no external web access. Tasks that depend on a live remote API do not qualify.
+- `ui_building`: only for genuine UI tasks that use the UI verifier stack (unit + E2E). Ordinary pytest-only backend validation does not qualify. **NOTE:** New `ui_building` tasks are NOT being accepted — see "Task types we no longer accept" below.
+
+If `environment/docker-compose.yaml` exists: set `custom_docker_compose = true`. If multiple services: also set `is_multi_container = true`. **NOTE:** New multi-container tasks are NOT being accepted — see "Task types we no longer accept" above.
+
+### Rubric requirements (milestone tasks)
+
+Each milestone must be represented in the rubric with **10–40 points** allocated to it. This is the maximum cumulative score, calculated by summing all positive criteria for that milestone. Scaling:
+
+- 1 milestone → 10–40 pts
+- 2 milestones → 20–80 pts
+- 3 milestones → 30–120 pts
+- N milestones → between (N × 10) and (N × 40) pts
+
+The non-milestone rubric range (10–40 maximum cumulative score, calculated from positive criteria only) still applies to standard and UI tasks. See `TASK_PROPOSAL_RUBRIC.md` for the line-item rubric authoring rules.
+
+### Migration checklist for existing milestone tasks (old format → new)
+
+Apply this checklist to every in-progress and new milestone submission. Existing tasks that ship in the deprecated layout will be rejected for structure.
+
+1. Bump `task.toml` to `version = "2.0"`. Remove any top-level `[agent]` / `[verifier]` blocks.
+2. Add `[metadata].number_of_milestones` equal to the milestone count.
+3. Create `steps/`. For each milestone N, create `steps/milestone_N/`.
+4. Split the monolithic `instruction.md` and `milestones.md` into per-milestone `steps/milestone_N/instruction.md` files, stripping any preview of later milestones. Keep overall task context in `steps/milestone_1/instruction.md`.
+5. Move `tests/test_mN.py` → `steps/milestone_N/tests/test_mN.py` (rename pytest class to `TestMilestoneN` if needed). Add a per-milestone `steps/milestone_N/tests/test.sh` that runs pytest and writes `reward.txt`.
+6. Move `solution/solveN.sh` → `steps/milestone_N/solution/solveN.sh`. Add the per-milestone `solve.sh` wrapper that calls `solveN.sh`.
+7. Delete the old root-level `instruction.md`, `milestones.md`, `tests/`, and `solution/`.
+8. Add `[[steps]]` blocks to `task.toml`, one per milestone, with `name = "milestone_N"` and per-step `[steps.agent]` / `[steps.verifier]` timeouts.
+9. Audit relative paths in moved scripts — container-absolute paths (`/app/...`, `/logs/verifier/reward.txt`) stay the same; anything resolving relative to the old task root must be rewritten.
+10. Confirm the rubric allocates 10–40 points per milestone.
+
+## output_contract.toml
+
+Every task must include `output_contract.toml`. It is the source of truth for what the instruction must document versus what stays internal to the harness.
+
+Required top-level declarations:
+
+- `user_visible_outputs` — every output path or named output surface the instruction must mention
+- `internal_harness_files` — internal scripts, source files, fixtures, helper binaries, or other runtime artifacts that tests may touch but the instruction does NOT need to expose
+- `structured_outputs.<name>` — one section per structured output schema that the instruction must document
+
+Example:
+
+```toml
+user_visible_outputs = ["/app/output/report.json"]
+internal_harness_files = ["/app/ci/harness/build_and_load.sh"]
+
+[structured_outputs.report]
+target = "/app/output/report.json"
+format = "json"
+instruction_checks = ["replays", "finish_reason", "tensor_sha256_hex"]
+```
+
+Rules:
+
+- Every `structured_outputs.<name>.target` must also appear in `user_visible_outputs`
+- `instruction_checks` must list the schema strings or contract tokens that instruction.md explicitly mentions
+- Do not smuggle internal helper paths into `user_visible_outputs`; put them in `internal_harness_files` instead
+
+## Environment files (general policy)
+
+**Allowed.**
+
+- Files that provide realistic environment context: `README.md`, `architecture.md`, API documentation, schema files, sample configs, etc.
+- Diverse, realistic file names. Variety is encouraged — a dataset of tasks that all use the same handful of filenames trains the model on the shape, not the substance.
+
+**Not allowed.**
+
+- **AI-specific filenames.** `CLAUDE.md`, `skills.md`, and similar names that signal AI scaffolding are banned. The submission validator enforces a closed list of these names at any archive depth (see `REPO_CONVENTIONS.md` § "AI-scaffolding filenames are banned anywhere in the submission archive").
+- **Hidden instructions to the agent.** Environment files must NOT contain step-by-step walkthroughs, solution hints, or prescriptive TODOs. The task must remain a multi-step reasoning challenge; files that leak the answer defeat the project's purpose. `run_static_checks.py --only environment_hidden_instructions` enforces this.
+
+**Litmus test.** An environment file should look like something a human engineer would plausibly find in a real repo, not a guide written for the agent.
+
+## LICENSE files
+
+- **Minimal / small codebases:** licenses should almost never be included. Omit by default.
+- **Large codebases:** use the repos we provide — they already carry copyright licenses with explicit permission for dataset inclusion. If sourcing your own, the repo MUST be licensed under MIT, Apache 2.0, or BSD. Anything else is not allowed.
+
+## environment/Dockerfile
+
+**Construction-time constraints this section enforces.** Most Dockerfile rules are enforced mechanically by `run_static_checks.py`:
+
+- `dockerfile_copy_sources` — every `COPY`/`ADD` source path must resolve inside the build context. Dead references (e.g., `COPY .cargo /app/.cargo` with no `.cargo/` directory) are HIGH failures.
+- `package_hygiene` — no build-artifact dirs (`build/`, `bin/`, `target/`, `dist/`, `node_modules/`, `__pycache__/`) anywhere under `environment/`; no pre-computed outputs under `environment/{output,out,bin}/`.
+- `shell_script_integrity` — any file with a `#!` shebang must have LF line endings (CRLF breaks kernel interpretation).
+- `timeout_coherence` — `verifier.timeout_sec` must be ≥ `environment.build_timeout_sec` when `tests/` invokes a build step.
+
+- Set `WORKDIR /app` (or similar real working directory)
+- Pin every `FROM` stage by digest, including builder stages
+- Pin apt package versions (e.g., `curl=7.88.1-10+deb12u8`)
+- Always: `apt-get update && apt-get install -y ... && rm -rf /var/lib/apt/lists/*`
+- Do NOT copy `solution/`, `tests/`, or oracle answers into the image
+- Do NOT create reserved paths (`/tests`, `/solution`, `/oracle`)
+- Install **verifier-only** dependencies here (pytest, pytest-json-ctrf, Playwright, extra Python/npm packages the verifier needs). With `allow_internet = false`, `tests/test.sh` cannot download or install anything at runtime.
+- Solution/agent dependencies MUST also be in the Dockerfile
+- See `skeleton/Default_Task_Skeleton/`, `skeleton/milestone_template/`, and `skeleton/UI_Task_Skeleton/` for offline-ready examples; the project site also documents Dockerfile/image best practices.
+- No privileged mode, SYS_ADMIN, or docker.sock mounts
+- Build context must not escape `environment/`
+- Data files: put in `environment/data/`, use `COPY data /root/data`
+- If cloning repos during build, pin to a specific commit
+
+## environment/.dockerignore
+
+**Required for non-trivial tasks.** Every task with more than a handful of files under `environment/` must ship `environment/.dockerignore` in the **task directory** (local Docker build context). `dockerfile_check.py` warns when it is missing. It is a hidden dotfile — enable “show hidden files” in your editor if you do not see it.
+
+**Include in the submission zip.** Packaging ships `environment/.dockerignore` via `task_integrity.PACKAGED_DOTFILE_PATHS` (see `approve_task.py`). Use the standard zip command in `commands.md` — do **not** add `-x '*/.*'`, which strips it. Task-root dotfiles (`.step2b-checksum`, etc.) stay excluded via `-x '.*'`.
+
+Canonical template (extend per task — e.g. `**/target/`, `bin/`, `output/` for compile-heavy tasks):
+
+```
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/node_modules/
+**/target/
+**/dist/
+**/build/
+.env
+*.log
+solution/
+tests/
+```
+
+`.dockerignore` trims accidental context pollution; it does **not** replace `package_hygiene` (no build artifacts committed under `environment/`) or narrow `COPY` in the Dockerfile.
+
+## environment/docker-compose.yaml
+
+If you include `environment/docker-compose.yaml`, start from this Harbor wiring template and only add task-specific services/options on top of it:
+
+```yaml
+services:
+  main:
+    build:
+      context: ${CONTEXT_DIR}
+    image: ${MAIN_IMAGE_NAME}
+    command:
+      - sh
+      - -c
+      - sleep infinity
+    environment:
+      - TEST_DIR=${TEST_DIR}
+    volumes:
+      - ${HOST_VERIFIER_LOGS_PATH}:${ENV_VERIFIER_LOGS_PATH}
+      - ${HOST_AGENT_LOGS_PATH}:${ENV_AGENT_LOGS_PATH}
+    deploy:
+      resources:
+        limits:
+          cpus: ${CPUS}
+          memory: ${MEMORY}
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+```
+
+Notes:
+
+- Keep `build.context: ${CONTEXT_DIR}` and `image: ${MAIN_IMAGE_NAME}` exactly as shown.
+- Keep `command: ["sh", "-c", "sleep infinity"]` so the workspace stays alive for agent/verifier execution.
+- Keep the verifier/agent log mounts so `/logs/verifier/reward.txt` is writable.
+- If you need to disable BuildKit provenance/SBOM in specific environments, do it via environment or CI config rather than `build.provenance` / `build.sbom` keys in this file, since some Harbor runners reject those compose keys.
+
+## solution/solve.sh
+
+**Construction-time constraints this section enforces.** `solve.sh` is the primary source of RC1 and RC7 signals:
+
+- RC1 (oracle simplification): must ADD real logic, not just delete/revert/flip flags
+- RC7 / A16 (oracle triviality + edit distance): non-boilerplate
+  semantic-delta LOC ≥ 30 floor, ≥ 80 for comfortable PASS. The
+  measurement is _substantive_ fix logic; cosmetic operations
+  (comment-marker rewrites, whitespace shuffles, AST padding
+  outside the fix locus) do not count toward the threshold. If
+  the genuine fix is < 30 LOC the task is too simple — redesign
+  the concept, do not pad. If the genuine fix is in the 30-79
+  WARN band, either expand substantively or accept the WARN with
+  Step 3b documented justification. See `difficulty-calibration.mdc`
+  A16 WARN-band policy. Padding is a `00-authoring-critical.mdc`
+  §6 Forbidden shortcut.
+- Oracle-1x plumbing: outputs exactly what tests assert, deterministically
+
+- Must solve the entire instruction deterministically
+- Must perform real work, not hardcode answers or copy test expectations
+- Must not require interactive input or fetch web dependencies at runtime
+- Should use `set -euo pipefail` (this is for solve.sh ONLY — test.sh MUST NOT use it, see below)
+- Can call Python/other scripts in the `solution/` folder
+- Must pass ALL tests when run inside the container
+- Write like a human (standard keyboard characters only)
+- **For milestone tasks:** there is no top-level `solution/` directory. Each milestone has its own `steps/milestone_N/solution/solve.sh` wrapper that calls `solveN.sh` containing only that milestone's commands. The wrapper pattern is:
+  ```bash
+  #!/bin/bash
+  set -euo pipefail
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  bash "$SCRIPT_DIR/solveN.sh"
+  ```
+  The container filesystem persists across milestones, so `solveN.sh` should reset state explicitly when needed rather than assume a clean slate. Keep the existing canary string convention in `solveN.sh` files (Terminal-Bench Canary header).
+
+### Determinism discipline (for Step 4's 10x flakiness check)
+
+`solve.sh` runs once in Step 2b as a sanity check and ten times in Step 4 as a flakiness check. A single pass is not evidence of determinism. While writing `solve.sh`:
+
+- No randomness (no unseeded `random`, no `$RANDOM`, no `uuidgen`).
+- No network calls, no external web resources.
+- No timing-dependent logic, no sleeps coupled to external state, no retry loops without bounded deterministic termination.
+- No filesystem-ordering dependence (iterate sorted, not raw `ls`).
+- No concurrency unless carefully scoped — concurrent writes to the same file are a common source of Step 4 10x failures.
+
+If any of the above is structurally required (e.g., a genuinely nondeterministic build step), isolate the nondeterministic part and normalize the output before tests see it.
+
+### Discoverability principle
+
+The task is hard because solving it requires real intellectual work — domain understanding, debugging, architectural reasoning, etc. Nothing the agent encounters should shortcut that work.
+
+For discoverability and collapse analysis in this repo, the authoritative solver-visible **file** surfaces are:
+
+- `instruction.md`
+- everything under `environment/`
+- everything under `tests/`
+- file and directory names reachable within those surfaces
+
+Treat these as authoring/package surfaces, not solver-visible file surfaces:
+
+- `task.toml`
+- `output_contract.toml`
+- everything under `solution/`
+- specs, jobs, reviewer notes, and packaging artifacts
+
+Discoverability can leak through any solver-visible file surface above, and through runtime behavior if you actually run the broken task:
+
+- **Instruction** — describes required behavior, not implementation fixes ("resumed runs drift" not "the CRC uses half the payload")
+- **Source/config/data files** — no markers, flags, annotations, commented-out correct values, or structural hints that reveal fix locations
+- **File/directory names** — neutral engineering names, not names that describe what's broken or what to fix
+- **Tests** — test names describe what to verify, not what to fix; assertions check outcomes, not implementation details
+- **Runtime behavior** — error messages guide debugging but don't pinpoint the exact fix
+
+The general test: could the agent skip the hard reasoning and find the solution through surface-level signals on any solver-visible file surface, or from runtime error output?
+
+**Complement: knob discoverability.** When the oracle solution toggles a build-time knob (CMake cache variable, build profile, env var) rather than editing source, the _agent must be able to discover the knob's name_. The instruction must mention it OR a comment in `environment/` must name it — bare appearances in code (`set(NAME 1)`, `#if NAME == 1`) do not count, because an agent rewriting the source would never preserve them. `run_static_checks.py --only oracle_knob_discoverability` enforces this. See `Task_Ready_To_Submit/rollback-replay-divergence.zip` for the canonical worked example: instruction names both `TB_TIMELINE_MODE` and `TB_REEXEC_MODE`, and `environment/CMakeLists.txt` carries an explanatory comment that survives any source-level edit.
+
+**Complement: path discoverability.** When the test fixture invokes a binary or reads a file at a fixed absolute path the agent must produce, the _agent must be able to discover that path_. For every `/app/...` path the tests resolve from a constant (e.g. `BIN = APP / "bin" / "netplay_matrix"`), the path must appear in `instruction.md` OR as a string literal / comment in `environment/`. Bare-code knob references don't count, but path string literals do — agents grep for `/app/` and find them. `run_static_checks.py --only oracle_path_discoverability` enforces this. The failure this prevents: agent solves the substantive problem perfectly, produces the correct outputs from `/app/build/<binary>`, and still fails every test because the fixture invokes the binary from `/app/bin/<binary>`.
+
+**Reference tasks.** When you need a worked example for a specific authoring decision, consult the catalog at `Task_Ready_To_Submit/REFERENCE.md` and the matching shipping zip. Quick map:
+
+- Conditional-compilation correctness, build-knob discoverability, partial-fix anti-cheating → `rollback-replay-divergence`
+- Mixed-language pipeline, anti-cheating runtime guards, provenance manifests → `release-provenance-drift`
+- WAL-journaled storage engine, Python-oracle test harness, pinned-view contracts → `lsm-snapshot-recovery`
+- Numerical interrupted-vs-baseline correctness, restart-fidelity oracle → `implicit-step-restart`
+- Distributed-state simulator, JSON replay bundles, fingerprint-based oracle → `byzantine-storage-rebalance`
+
+## tests/test.sh
+
+**Offline verifier template (required).** With `[environment].allow_internet = false`, the verifier cannot reach the network. Do **not** run `apt-get install`, `pip install`, `curl`, `uv`/`uvx`, or `npm install` in `test.sh`. Pin every verifier dependency in `environment/Dockerfile` instead.
+
+Start from `skeleton/Default_Task_Skeleton/tests/test.sh` (standard tasks) or `skeleton/milestone_template/steps/milestone_N/tests/test.sh` (milestone tasks). The checker enforces this shape.
+
+```bash
+#!/bin/bash
+
+# Verifier dependencies are installed in environment/Dockerfile.
+# Add task-specific verifier-only Python packages there, not here.
+
+mkdir -p /logs/verifier
+
+if [ "$PWD" = "/" ]; then
+    echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script."
+    exit 1
+fi
+
+python -m pytest -o cache_dir=/tmp/pytest_cache \
+  --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+
+if [ $? -eq 0 ]; then
+    echo 1 > /logs/verifier/reward.txt
+else
+    echo 0 > /logs/verifier/reward.txt
+fi
+```
+
+**What you MAY change** (only these, nothing else):
+
+1. The pytest target path — `/tests/test_outputs.py` for standard tasks; `/tests/test_m1.py`, `/tests/test_m2.py`, … for milestone `steps/milestone_N/tests/test.sh` runners
+2. Extra pytest flags/plugins already installed in the image (e.g. `-p randomly` when `pytest-randomly` is in the Dockerfile)
+3. Use `python3 -m pytest` instead of `python -m pytest` when the image only provides `python3`
+
+**What you MUST NOT change:**
+
+- Do not add runtime package installation (`apt-get`, `pip`, `curl`, `uv`/`uvx`, `npm install`, …)
+- Do not add `set -euo pipefail` or `set -e` on standard (non-milestone-step) tasks — `set -e` breaks `$?` in the reward footer
+- Milestone per-step runners in `skeleton/milestone_template/` may use `set -euo pipefail` with `set +e` around pytest; copy that pattern verbatim for milestone tasks
+- Do not restructure the reward block: the file must end with the five-line `if [ $? -eq 0 ]; then` … `fi` block only (no `RC=$?`, no `exit` after `fi`) — upstream CodeBuild rejects any other tail
+- Do not emit `reward.json`
+
+Edition 2 templates always emit `/logs/verifier/reward.txt`. `run_static_checks.py` rejects network installs in any `tests/test.sh` or `steps/milestone_N/tests/test.sh`, requires the WORKDIR guard, requires `python -m pytest`, and validates the platform reward footer.
+
+### UI task template
+
+**NOTE:** New UI building tasks are no longer accepted. In-progress UI tasks must follow the offline pattern in `skeleton/UI_Task_Skeleton/`: npm packages and Playwright install in `environment/Dockerfile` (`verifier-package.json` + `npm install` + `playwright install` at build time), not in `test.sh`.
+
+```bash
+#!/bin/bash
+set -e
+
+# Verifier dependencies and the Playwright browser are installed in
+# environment/Dockerfile. Do not install npm packages or Playwright here.
+
+mkdir -p /logs/verifier
+
+if [ "$PWD" = "/" ]; then
+  echo "Error: No working directory set. Please set a WORKDIR in your Dockerfile before running this script."
+  exit 1
+fi
+
+rm -rf /tmp/ui-task-tests
+cp -R /tests /tmp/ui-task-tests
+cd /tmp/ui-task-tests
+ln -s /opt/ui-task-tests/node_modules node_modules
+export PATH="/opt/ui-task-tests/node_modules/.bin:$PATH"
+
+UNIT_EXIT=0
+E2E_EXIT=0
+npm run test || UNIT_EXIT=$?
+npm run test:e2e || E2E_EXIT=$?
+
+if [ "$UNIT_EXIT" -eq 0 ] && [ "$E2E_EXIT" -eq 0 ]; then
+  echo 1 > /logs/verifier/reward.txt
+else
+  echo 0 > /logs/verifier/reward.txt
+fi
+
+[ "$UNIT_EXIT" -eq 0 ] && [ "$E2E_EXIT" -eq 0 ]
+```
+
+## tests/test_outputs.py
+
+**Construction-time constraints this section enforces.** Every rule below maps to a post-construction check you should pass first try:
+
+- NOP invariant → tests must reject the broken baseline (empty output, missing file, default value)
+- RC3 (verifier shallowness) → assertions check computed domain-correct values, not format/schema/existence alone
+- RC4 (tamper surface) → tests depend only on solver outputs, not on environment files the agent can rewrite
+- RC5 (reference artifacts) → expected values are embedded in test code, not read from solver-visible files
+- Part B (per-test feasibility) → each test is independently passable by multiple valid approaches
+- `instruction_test_vocabulary` static check → every exact-value assertion on an instruction-named field has that value grounded somewhere in `instruction.md` text
+
+### Structural rules
+
+- Use exact filename `test_outputs.py` for standard tasks. For milestone tasks, each milestone has its own `steps/milestone_N/tests/test_mN.py` with assertions in a single `TestMilestoneN` class. There is no root-level `tests/` directory for milestone tasks.
+- Write normal pytest tests with informative docstrings
+- Test behavior, not implementation. Do not parse source code.
+- Every requirement in instruction.md → at least one test
+- Every test → must correspond to something in instruction.md
+- Cover edge cases and boundary conditions
+- Prefer structured/property-based assertions over exact-string equality
+- Include anti-cheating measures
+- No wall-clock, latency, throughput, or memory assertions
+- No test execution order dependency or shared global state
+- No hardcoded random values
+- Must pass `ruff` on verifier files and on `environment/` Python only (Edition 2 `run_static_checks.py` runs both; other languages under `environment/` are not linted by ruff)
+- Target at least 6 discoverable tests, preferably 10–15 for larger tasks
+
+### NOP-aware construction
+
+Every assertion must fail against the NOP baseline (what the agent sees before doing any work — typically missing files, empty outputs, or default/zero values). Before finalizing each test, ask: "if `solve.sh` did nothing, would this assertion catch it?" If the answer is no (e.g., `assert Path(output).exists()` passes on a touched-but-empty file), tighten the assertion to require domain-correct content, not mere existence.
+
+### RC3/RC4-aware construction
+
+- Do not assert only "file exists" or "JSON is valid" — assert the values inside are domain-correct.
+- Do not read expected values from a file in `environment/` that the agent could rewrite. Compute expected values in test code from the task's specification, or embed them as literals.
+- If a test compares agent output to a reference, the reference must live in test code (`/tests/`), not in `environment/`.
+
+### Per-test feasibility (prevents 0/10 per-test rejection)
+
+- Each test must be independently achievable, not chain-dependent on the full solution
+- If asserting an exact value, it must be the only correct answer
+- Each test should be passable by at least two valid solution approaches
+- Avoid tests requiring niche knowledge most agents would not try
+
+## Packaging
+
+Packaging is **Step 4's job**, not Step 2b's. Step 2b drafts files and runs the verification chain (static checks, collapse check, oracle 1x + NOP); Step 4 is where the submission zip is actually created, validated, and approved. The instructions below are the rules Step 4 enforces — they are documented here so construction stays aware of what will ship.
+
+### Files at archive root
+
+Required (must be in the zip, at the archive root):
+
+- `instruction.md`
+- `task.toml`
+- `environment/` directory
+- `solution/` directory
+- `tests/` directory
+
+Forbidden (must NOT be in the zip, even though some live at the task root for repo tooling):
+
+- `output_contract.toml` — authoring metadata; read by repo tooling, not shipped.
+- `quality_check_adjudication.json` — per-task quality-check waiver; repo-internal.
+- `rubric.txt`, `rubrics.txt` — rubrics are authored in the submission UI.
+- Anything under `__pycache__/`, `.*`, `*.pyc`.
+
+These four forbidden filenames are the canonical `validate_submission_zip.FORBIDDEN_ROOT_FILES` list. Step 4's zip command excludes them explicitly:
+
+```bash
+cd tasks/<task-name>
+rm -f ../../Task_Ready_To_Submit/<task-name>.zip
+zip -rq ../../Task_Ready_To_Submit/<task-name>.zip . \
+    -x '*/__pycache__/*' '*.pyc' '.*' \
+    -x 'output_contract.toml' \
+    -x 'quality_check_adjudication.json' \
+    -x 'rubric.txt' \
+    -x 'rubrics.txt'
+python3 ../../validate_submission_zip.py ../../Task_Ready_To_Submit/<task-name>.zip
+```
+
+`validate_submission_zip.py` returning PASS is the gate, not the goal — Step 4 then runs `approve_task.py` as the authoritative repo-local approval, which bundles `run_static_checks.py` + `collapse_check.py` + zip validation + manifest verification + zip/source parity.
+
+### Construction-time implications
+
+- Do NOT place `rubrics.txt` at the task root. It will be rejected by the zip validator and fail `approve_task.py` anyway.
+- DO place `output_contract.toml` at the task root. It is required by repo conventions and read by `run_static_checks.py --only output_contract`. The `-x` exclusion keeps it out of the shipped zip without forcing you to move it.
+- Do NOT add the forbidden files to `.gitignore` — they must be committed to the task directory for repo tooling; only the zip step excludes them.
+
+## Pre-submit self-check (before reporting `done` in Step 2b)
+
+Before concluding Step 2b, walk this construction checklist. Each item corresponds to a check that will run downstream — a disciplined draft passes every one on the first mechanical run.
+
+**File layout**
+
+- [ ] All required files present for the task type (standard / milestone / UI)
+- [ ] No forbidden files at task root (`rubric.txt`, `rubrics.txt`, legacy `milestones.md`, AI-scaffolding filenames like `CLAUDE.md` / `skills.md` at any depth)
+- [ ] For milestone tasks: no top-level `instruction.md`, `tests/`, `solution/`, `milestone_X.md`; everything per-milestone lives under `steps/milestone_N/{instruction.md, tests/{test.sh, test_mN.py}, solution/{solve.sh, solveN.sh}}`
+- [ ] For milestone tasks: `[metadata].number_of_milestones` matches the count of `[[steps]]` blocks; no top-level `[agent]` / `[verifier]` blocks in `task.toml`
+- [ ] `output_contract.toml` present at task root (required; excluded from zip later)
+- [ ] Env file count under `environment/` (excluding Dockerfile and docker-compose) is ≥ 20
+- [ ] No banned task types started: not multi-container, not UI building (in-progress instances of these may be completed but new starts are not accepted)
+- [ ] No `LICENSE` file unless the codebase is `large`; if present, license is one of MIT, Apache 2.0, or BSD
+- [ ] No environment files contain hidden agent instructions (HINT:/STEP N: walkthroughs, "to solve this..."), and no AI-specific filenames (`CLAUDE.md`, `skills.md`, …) anywhere under the archive
+
+**Instruction (RC6 + §1)**
+
+- [ ] No named algorithms, schema enumerations, CLI/flag lists, numeric thresholds, binding phrases, scope closures, file/function locations, or cause statements
+- [ ] No emojis, no decorative unicode, no bold markers on solution-adjacent values
+- [ ] No roleplay boilerplate, no verifier-centric phrasing, no step-by-step recipes
+- [ ] Absolute paths, not relative
+- [ ] 150-200 words of actionable content, human-voiced prose
+- [ ] Task name not leaked; no legacy canary strings
+- [ ] Every exact-value assertion in tests has its value grounded somewhere in instruction text (`instruction_test_vocabulary` check)
+- [ ] No `internal_harness_files` path surfaced (unless also in `user_visible_outputs`)
+
+**task.toml (§5 + static checks)**
+
+- [ ] `version = "2.0"`, all required `[metadata]` fields present
+- [ ] No Harbor-framework-only fields (`schema_version`, `[task]`, `min_reward`, `[steps.healthcheck]`, `[steps.verifier.env]`, `artifacts`, `multi_step_reward_strategy`, `workdir/setup.sh`)
+- [ ] Author placeholders kept anonymous (`"your-name"` / `"your-email"` / `"anonymous"` — never a real identifier)
+- [ ] `codebase_size` matches actual env file count
+- [ ] 3-6 tags, no padding; `subcategories` (not `task_subtypes`)
+- [ ] For milestone tasks: `number_of_milestones` matches the count of `[[steps]]` blocks; each `[[steps]].name` is `milestone_N`; per-step `[steps.agent]` / `[steps.verifier]` timeouts present; no top-level `[agent]` / `[verifier]` blocks
+- [ ] `verifier.timeout_sec` ≥ `environment.build_timeout_sec` if tests build anything; both ≤ 1800
+
+**Environment / Dockerfile (§2 + static checks)**
+
+- [ ] `environment/.dockerignore` present for non-trivial contexts (excludes `.git`, caches, `node_modules/`, `.env`, `solution/`, `tests/`); included in the submission zip
+- [ ] `WORKDIR` set; every `FROM` pinned by digest; apt versions pinned
+- [ ] Every `COPY`/`ADD` source resolves inside build context
+- [ ] No `solution/`, `tests/`, or oracle answer files copied into image
+- [ ] No build-artifact directories under `environment/`
+- [ ] No privileged, SYS_ADMIN, or docker.sock mounts
+- [ ] `[environment].allow_internet = false`
+- [ ] Verifier deps pinned in `environment/Dockerfile` (not installed in `tests/test.sh` at runtime)
+- [ ] All shebanged scripts use LF line endings
+
+**Tests (RC3/RC4/RC5 + NOP + Part B)**
+
+- [ ] `tests/test.sh` matches the platform template (no runtime installs; `python -m pytest`; reward footer ends with `if [ $? -eq 0 ]; then` … `fi` only)
+- [ ] Every assertion fails against the NOP baseline (empty output, missing file, default value)
+- [ ] Assertions check domain-correct computed values, not format/existence alone
+- [ ] Expected values live in test code, not in `environment/` files the agent could rewrite
+- [ ] No order dependency, no shared global state, no flaky timing
+- [ ] Each test is independently passable by multiple valid approaches
+- [ ] 6+ tests (10-15 for larger tasks), discoverable `test_*` names
+
+**Solve.sh (RC1 + RC7)**
+
+- [ ] Non-boilerplate LOC ≥ 30 (target 80+)
+- [ ] Adds real logic; no pure `sed -i '/BUG/d'` reverts
+- [ ] No randomness, no network, no timing dependencies, no filesystem-ordering assumptions (10x-ready)
+- [ ] For milestone tasks: each milestone has its own `steps/milestone_N/solution/solve.sh` wrapper that calls `solveN.sh`; `solveN.sh` contains only that milestone's commands; no root-level `solve.sh` chaining `solve1.sh ... solveN.sh`
+
+**Solver-visible surfaces (RC2/RC5 + discoverability)**
+
+- [ ] No `broken_*`, `buggy_*`, `fix_me_*`, `golden_*`, `expected_*` tokens in file or directory names
+- [ ] No answer-shaped fixtures in solver-visible surfaces
+- [ ] Test names describe what to verify, not what to fix
+- [ ] Comments in `environment/` do not reveal fix locations or correct values
+
+If any item above is not satisfied, fix it before reporting `done` in Step 2b. The Step 2b mechanical chain (static checks → collapse check → oracle 1x + NOP) then confirms, not discovers, that construction was correct.

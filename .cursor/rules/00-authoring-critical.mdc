@@ -1,0 +1,102 @@
+---
+description: Critical-path policy for TB3 task work. Pull when editing task files, running gates (run_static_checks.py, collapse_check.py, oracle, NOP), preparing a submission, or running approve_task.py. Source of truth when it disagrees with deeper rules.
+alwaysApply: false
+---
+
+# TB3 Authoring Critical Path
+
+Source of truth when this rule and a deeper rule disagree. Deep rules
+(`task-creation.mdc`, etc.) are reference material; this rule is policy.
+If a deep rule contradicts this one, edit the deep rule.
+
+## 0. No hallucinated repo facts
+
+Before naming a path, command, `task.toml` field, output path, or test file:
+open the file or check `commands.md`. Specifically:
+
+- `/app/...` paths come from `instruction.md` or `output_contract.toml`, not memory.
+- `task.toml` fields come from an existing task or the static-checks output.
+- Test file paths come from `tests/test.sh` or the verifier files themselves.
+- Command syntax comes from `commands.md`.
+
+## 1. Step 2a before Step 2b
+
+If the task idea would let an agent solve it from `instruction.md` alone,
+reject or redesign before drafting files. Validation criteria:
+discoverability, synthesis depth, diagnosis, coupling navigation, and
+reasoning beyond training. Full rule: `idea-validation.mdc`.
+
+## 2. Construction is spec-driven
+
+Before editing task files, read:
+
+- `specs/<task-name>.md` (Authoring Brief section only).
+- `task-creation.mdc`, `difficulty-calibration.mdc`.
+
+The Reviewer Appendix in the spec is for paper review, not for drafting.
+If the spec lacks a Triviality Ledger or Per-gate Pitfall Inventory,
+escalate to Step 2a — do not draft from an under-validated spec.
+
+## 3. Mandatory Step 2b gate order
+
+Preflight (cheap, single-command):
+
+```bash
+./scripts/check-task.sh tasks/<task-name>
+```
+
+Preflight is not Step 2b PASS. After preflight, run:
+
+```bash
+harbor run -p "tasks/<task-name>" -a oracle    # 1x only in Step 2b
+harbor run -p "tasks/<task-name>" -a nop
+```
+
+Oracle 10x belongs to Step 4 only.
+
+## 4. Dirty-flag is mechanical
+
+`scripts/check-task.sh` writes `tasks/<task-name>/.step2b-checksum` on
+PASS via `task_integrity.write_step2b_checksum`. `approve_task.py` calls
+`task_integrity.verify_step2b_checksum` and refuses to package on
+mismatch. The agent does not need to remember to re-run gates — the
+checksum will catch it. Do not delete or forge `.step2b-checksum`.
+
+## 5. Final approval rule
+
+Before claiming READY / APPROVED / SUBMIT:
+
+- Oracle 10x must pass.
+- NOP must score 0.0.
+- Submission zip must validate via `validate_submission_zip.py`.
+- `approve_task.py` must exit 0 (which includes checksum verification).
+
+## 6. Forbidden shortcuts
+
+- Runtime verifier installs in `tests/test.sh` or `steps/milestone_N/tests/test.sh` when `allow_internet = false` (use `environment/Dockerfile` instead).
+- Omitting `[environment].allow_internet = false` from `task.toml`.
+- Editing tests to fit a broken solution.
+- Hiding golden answers under `environment/`.
+- Putting answer-shaped values into `instruction.md`.
+- Hidden instructions to the agent in environment files (HINT:/STEP N: walkthroughs, "to solve this...", prescriptive TODOs aimed at the solver).
+- AI-specific filenames anywhere in the archive (`CLAUDE.md`, `skills.md`, `AGENTS.md`, `.cursor/`, `.aider/`, …).
+- Replacing anonymous author placeholders (`"your-name"` / `"your-email"` / `"anonymous"`) with real identifiers.
+- Decorative code or empty files to satisfy size requirements.
+- Padding `solve.sh` with cosmetic operations (sed substitutions on comment markers, AST or heredoc rewrites whose only effect is whitespace or comment shuffling) to push GX3 / A16 line counts above the threshold. A WARN-band GX3 means the oracle is genuinely small — expand the substantive fix logic or accept the WARN with documented Step 3b justification. See `difficulty-calibration.mdc` A16 WARN-band policy.
+- Starting a new multi-container or UI building task (both no longer accepted; in-progress instances may be completed).
+- Using the deprecated root-level milestone layout (top-level `instruction.md` / `tests/` / `solution/` / `milestones.md` / `milestone_X.md`). Use `steps/milestone_N/` per `task-creation.mdc`.
+- Using Harbor-framework-only `task.toml` fields we do not adopt (`schema_version`, `[task]`, `min_reward`, `[steps.healthcheck]`, `[steps.verifier.env]`, `artifacts`, `multi_step_reward_strategy`, `workdir/setup.sh`).
+- Claiming a command passed without its output.
+- Bypassing the dirty-flag by deleting `.step2b-checksum`.
+
+## 7. Failure escalation
+
+If the same failure pattern recurs three times across recent task work:
+file a CNI entry citing the three instances. Do not propose a new
+critical-rule bullet without that evidence. See `CNI.md` for the
+promotion policy.
+
+## 8. Demotion
+
+If a bullet in this file hasn't fired in the last 10 task authorings,
+propose moving it to a deep rule. This file is not append-only.

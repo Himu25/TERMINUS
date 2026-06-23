@@ -1,0 +1,3 @@
+# Installed in the Docker image or when running npm install locally
+node_modules/
+package-lock.json
