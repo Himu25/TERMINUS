@@ -38,3 +38,13 @@ RUN apt-get update \
 Fix the tmux/asciinema installation in your Dockerfile so GPT-5.2 runs don't crash on infrastructure, and the solvability check should pass on resubmission.
 
 ---
+@writing_tests.mdc @reviewer_checklist.mdc @instructions_prompt.mdc @ci_checks.mdc   Review this task according to these files, and whatever issues comes, fix them.
+
+---
+Remove canary string if any and also please use approved canonical images then generate the zip file for submission
+
+---
+Generate copy paste UI submission rubrics for this task here in chat only(codebox) Following @TASK_PROPOSAL_RUBRIC.md
+
+---
+Kindly consider that you don't expose any hint or implementation plan for The agent
